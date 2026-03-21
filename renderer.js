@@ -1,593 +1,271 @@
-// Markdown options (highlighting is handled post-render via DOM)
 marked.setOptions({
-  breaks: true // Enables line breaks instead of ignoring them
+  breaks: true,
+  gfm: true
 });
 
-// Elements
-const messagesList = document.getElementById('messages');
-const promptInput = document.getElementById('prompt-input');
-const projectsSidebar = document.getElementById('projects-sidebar');
-const addProjectBtn = document.getElementById('add-project-btn');
-const projectsListUI = document.getElementById('projects-list');
-const activeFolderNameUI = document.getElementById('active-folder-name');
-const historySidebar = document.getElementById('history-sidebar');
-const historyList = document.getElementById('history-list');
+const appLayout = document.getElementById("app-layout");
+const launchCopy = document.getElementById("launch-copy");
+const messagesList = document.getElementById("messages");
+const promptInput = document.getElementById("prompt-input");
+const workspacePill = document.getElementById("workspace-pill");
+const modelPill = document.getElementById("model-pill");
+const activeFolderNameUI = document.getElementById("active-folder-name");
+const activeModelNameUI = document.getElementById("active-model-name");
+const tokenCounter = document.getElementById("token-counter");
+const stopBtn = document.getElementById("stop-btn");
+const statusText = document.getElementById("status-text");
 
-let currentFolderPath = '';
+const cmdOverlay = document.getElementById("cmd-palette-overlay");
+const cmdInput = document.getElementById("cmd-input");
+const cmdResults = document.getElementById("cmd-results");
+const cmdModeLabel = document.getElementById("cmd-mode-label");
+const cmdBackBtn = document.getElementById("cmd-back-btn");
 
-// Initialize default path
-async function initContext() {
-  if (window.electronAPI && window.electronAPI.getDefaultPath) {
-    currentFolderPath = await window.electronAPI.getDefaultPath();
-    const folderName = currentFolderPath.split('/').pop() || currentFolderPath.split('\\').pop() || 'Global';
-    if (activeFolderNameUI) {
-      activeFolderNameUI.textContent = folderName;
-      activeFolderNameUI.title = currentFolderPath;
-    }
-  }
-}
-initContext();
+const settingsModalOverlay = document.getElementById("settings-modal-overlay");
+const modelSelect = document.getElementById("model-select");
+const tempSlider = document.getElementById("temp-slider");
+const tempVal = document.getElementById("temp-val");
+const ctxSlider = document.getElementById("ctx-slider");
+const ctxVal = document.getElementById("ctx-val");
+const settingsCloseBtn = document.getElementById("settings-close-btn");
+const settingsSaveBtn = document.getElementById("settings-save-btn");
 
-// --- Sidebar Logic ---
-let isSidebarOpen = false;
+const systemModalOverlay = document.getElementById("system-modal-overlay");
+const systemInput = document.getElementById("system-input");
+const systemCloseBtn = document.getElementById("system-close-btn");
+const systemSaveBtn = document.getElementById("system-save-btn");
 
-function toggleSidebar() {
-  isSidebarOpen = !isSidebarOpen;
-  if (isSidebarOpen) {
-    projectsSidebar.classList.remove('hidden');
-  } else {
-    projectsSidebar.classList.add('hidden');
-  }
-}
+const state = {
+  currentFolderPath: "",
+  workspacePaths: JSON.parse(localStorage.getItem("warp_chat_workspaces") || "[]"),
+  conversationHistory: [],
+  chatSessions: [],
+  currentSessionId: Date.now().toString(),
+  currentModel: localStorage.getItem("warp_chat_model") || "qwen3.5:4b",
+  currentTemperature: localStorage.getItem("warp_chat_temp") || "0.7",
+  currentContextWindow: localStorage.getItem("warp_chat_ctx") || "8192",
+  currentSystemPrompt: localStorage.getItem("warp_chat_sys") || "",
+  currentAbortController: null,
+  isGenerating: false,
+  isAudioMuted: localStorage.getItem("warp_chat_muted") === "true",
+  lastGeneratedCodeBlocks: [],
+  paletteMode: "root",
+  paletteItems: [],
+  selectedPaletteIndex: 0,
+  isCmdPaletteOpen: false
+};
 
-// Cmd + B toggles sidebar
-document.addEventListener('keydown', (e) => {
-  // Cmd+B for Projects Sidebar
-  if (e.key === 'b' && e.metaKey) {
-    e.preventDefault();
-    projectsSidebar.classList.toggle('hidden');
-  }
-  
-  // Cmd+J for History Sidebar
-  if (e.key === 'j' && e.metaKey) {
-    e.preventDefault();
-    historySidebar.classList.toggle('hidden');
-  }
-});
-
-addProjectBtn.addEventListener('click', async () => {
-  const folderPath = await window.electronAPI.selectFolder();
-  if (folderPath) {
-    // Remove empty state message
-    const emptyLi = projectsListUI.querySelector('.empty-projects');
-    if (emptyLi) emptyLi.remove();
-    
-    const folderName = folderPath.split('/').pop() || folderPath.split('\\').pop();
-    const li = document.createElement('li');
-    li.className = 'project-item';
-    li.innerHTML = `<span style="opacity:0.6;font-size:12px">📁</span> <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${folderPath}">${folderName}</span>`;
-    
-    li.addEventListener('click', () => {
-      document.querySelectorAll('.project-item').forEach(item => item.classList.remove('active'));
-      li.classList.add('active');
-      currentFolderPath = folderPath;
-      if (activeFolderNameUI) {
-        activeFolderNameUI.textContent = folderName;
-        activeFolderNameUI.title = folderPath;
-      }
-      showToast('Workspace set to: ' + folderName);
-    });
-    
-    projectsListUI.appendChild(li);
-    if (projectsListUI.children.length === 1) li.click(); // Auto-select first
-  }
-});
-
-// --- Typewriter Placeholder Animation ---
-const placeholders = [
-  "Write a Python script for data analysis...",
-  "Explain quantum computing simply...",
-  "Refactor this React component...",
-  "Translate this code to Rust...",
-  "Type a command... (Enter to send)"
-];
-
-let placeholderIndex = 0;
-let charIndex = 0;
-let isDeleting = false;
-let typeSpeed = 50;
-
-function typePlaceholder() {
-  const currentText = placeholders[placeholderIndex];
-  
-  if (isDeleting) {
-    promptInput.placeholder = currentText.substring(0, charIndex - 1);
-    charIndex--;
-    typeSpeed = 20; // faster delete
-  } else {
-    promptInput.placeholder = currentText.substring(0, charIndex + 1);
-    charIndex++;
-    typeSpeed = 60; // slower type
-  }
-
-  // If word is complete
-  if (!isDeleting && charIndex === currentText.length) {
-    isDeleting = true;
-    typeSpeed = 2500; // Pause at end of word
-  } else if (isDeleting && charIndex === 0) {
-    isDeleting = false;
-    placeholderIndex = (placeholderIndex + 1) % placeholders.length;
-    typeSpeed = 500; // Pause before new word
-  }
-
-  // Don't animate if input has value or is generating
-  if (promptInput.value === '' && !isGenerating) {
-    setTimeout(typePlaceholder, typeSpeed);
-  } else {
-    // If user starts typing or generating, wait and check again
-    promptInput.placeholder = "Type a message... (Enter to send)";
-    setTimeout(typePlaceholder, 2000);
-  }
-}
-
-// Start typewriter
-setTimeout(typePlaceholder, 1000);
-
-// --- Audio Haptics System ---
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-let isAudioMuted = localStorage.getItem('warp_chat_muted') === 'true';
 
-function playThock() {
-  if (isAudioMuted) return;
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  const osc = audioCtx.createOscillator();
-  const gainNode = audioCtx.createGain();
-  
-  osc.type = 'sine';
-  // Rapid pitch drop for a mechanical thock
-  osc.frequency.setValueAtTime(150, audioCtx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.05);
-  
-  // Very short envelope
-  gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-  gainNode.gain.linearRampToValueAtTime(0.4, audioCtx.currentTime + 0.01);
-  gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.05);
-  
-  osc.connect(gainNode);
-  gainNode.connect(audioCtx.destination);
-  
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.06);
+function basename(targetPath) {
+  if (!targetPath) return "Global";
+  return targetPath.split("/").pop() || targetPath.split("\\").pop() || "Global";
 }
 
-function playClick() {
-  if (isAudioMuted) return;
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  const osc = audioCtx.createOscillator();
-  const gainNode = audioCtx.createGain();
-  
-  osc.type = 'triangle';
-  osc.frequency.setValueAtTime(800, audioCtx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(300, audioCtx.currentTime + 0.03);
-  
-  gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-  gainNode.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.005);
-  gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.04);
-  
-  osc.connect(gainNode);
-  gainNode.connect(audioCtx.destination);
-  
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.05);
+function uniquePaths(paths) {
+  return [...new Set(paths.filter(Boolean))];
 }
 
-// --- Command Palette Logic ---
-const cmdOverlay = document.getElementById('cmd-palette-overlay');
-const cmdInput = document.getElementById('cmd-input');
-const cmdItems = document.querySelectorAll('.cmd-item');
-let isCmdPaletteOpen = false;
-
-function toggleCmdPalette() {
-  isCmdPaletteOpen = !isCmdPaletteOpen;
-  if (isCmdPaletteOpen) {
-    cmdOverlay.classList.remove('hidden');
-    cmdInput.value = '';
-    cmdInput.focus();
-    filterCmdItems('');
-  } else {
-    cmdOverlay.classList.add('hidden');
-    promptInput.focus();
-  }
+function rememberWorkspace(targetPath) {
+  state.workspacePaths = uniquePaths([targetPath, ...state.workspacePaths]).slice(0, 8);
+  localStorage.setItem("warp_chat_workspaces", JSON.stringify(state.workspacePaths));
 }
 
-// Close on escape or stop generation
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    if (isCmdPaletteOpen) {
-      toggleCmdPalette();
-    } else if (isGenerating && currentAbortController) {
-      currentAbortController.abort();
-      currentAbortController = null;
-    }
-  }
-});
-
-// Cmd + K listener
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'k' && e.metaKey) {
-    e.preventDefault();
-    toggleCmdPalette();
-  }
-});
-
-// Filter commands on type
-cmdInput.addEventListener('input', (e) => {
-  filterCmdItems(e.target.value.toLowerCase());
-});
-
-function filterCmdItems(query) {
-  let firstVisible = null;
-  cmdItems.forEach(item => {
-    item.classList.remove('selected');
-    if (item.innerText.toLowerCase().includes(query)) {
-      item.style.display = 'flex';
-      if (!firstVisible) {
-        firstVisible = item;
-        item.classList.add('selected');
-      }
-    } else {
-      item.style.display = 'none';
-    }
-  });
+function updateWorkspaceUI() {
+  activeFolderNameUI.textContent = basename(state.currentFolderPath);
+  activeFolderNameUI.title = state.currentFolderPath || "Global workspace";
 }
 
-// Handle command execution
-cmdInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    const selectedItem = document.querySelector('.cmd-item.selected');
-    if (selectedItem) {
-      executeCommand(selectedItem.dataset.action);
-    }
-  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    e.preventDefault();
-    const visibleItems = Array.from(cmdItems).filter(item => item.style.display !== 'none');
-    const selectedIndex = visibleItems.findIndex(item => item.classList.contains('selected'));
-    
-    if (visibleItems.length > 0) {
-      visibleItems[selectedIndex].classList.remove('selected');
-      let newIndex = e.key === 'ArrowDown' ? selectedIndex + 1 : selectedIndex - 1;
-      
-      if (newIndex >= visibleItems.length) newIndex = 0;
-      if (newIndex < 0) newIndex = visibleItems.length - 1;
-      
-      visibleItems[newIndex].classList.add('selected');
-      visibleItems[newIndex].scrollIntoView({ block: 'nearest' });
-    }
-  }
-});
-
-function executeCommand(action) {
-  toggleCmdPalette(); // close it
-  if (action === 'clear') {
-    conversationHistory = [];
-    currentSessionId = Date.now().toString(); // Break into new session
-    const msgs = document.getElementById('messages');
-    if (msgs) {
-      msgs.innerHTML = '<div class="welcome-message text-muted">Awaiting your command...</div>';
-    }
-    const motd = document.getElementById('motd-container');
-    if (motd) motd.classList.remove('hidden');
-    showToast('Chat cleared');
-    saveCurrentSession(); // Save the cleared state (empty history)
-  } else if (action === 'prompt') {
-    openSettingsModal();
-  } else if (action === 'toggle-sound') {
-    isAudioMuted = !isAudioMuted;
-    localStorage.setItem('warp_chat_muted', isAudioMuted);
-    showToast(isAudioMuted ? 'Sounds muted 🔇' : 'Sounds unmuted 🔊');
-    if (!isAudioMuted) playClick();
-  } else {
-    // generic toast for others
-    showToast('Command executed: ' + action);
-  }
+function updateModelUI() {
+  activeModelNameUI.textContent = state.currentModel;
 }
 
-// Focus input on any key press (if not already focused, no modifiers, and not in palette)
-document.addEventListener('keydown', (e) => {
-  if (e.target !== promptInput && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
-    promptInput.focus();
-  }
-});
+function updateStatus(message) {
+  statusText.textContent = message;
+}
 
-const tokenCounter = document.getElementById('token-counter');
+function setEmptyState(isEmpty) {
+  appLayout.dataset.empty = isEmpty ? "true" : "false";
+  launchCopy.textContent = isEmpty
+    ? "Ask a question, inspect a file, or iterate on code. Use Cmd+K for model, workspace, and session controls."
+    : "The transcript is active. Use Cmd+K for model, workspace, export, or recent sessions.";
+}
 
 function updateTokenCounter() {
   const estimatedTokens = Math.floor(promptInput.value.length / 4);
-  const maxCtx = parseInt(currentContextWindow, 10);
+  const maxCtx = Number.parseInt(state.currentContextWindow, 10);
   tokenCounter.textContent = `${estimatedTokens.toLocaleString()} / ${maxCtx.toLocaleString()} ctx`;
-  
-  if (estimatedTokens > maxCtx * 0.85) tokenCounter.className = 'token-counter danger';
-  else if (estimatedTokens > maxCtx * 0.6) tokenCounter.className = 'token-counter warning';
-  else tokenCounter.className = 'token-counter';
+
+  tokenCounter.className = "token-counter";
+  if (estimatedTokens > maxCtx * 0.85) tokenCounter.classList.add("danger");
+  else if (estimatedTokens > maxCtx * 0.6) tokenCounter.classList.add("warning");
 }
 
-// Auto-resize textarea and update tokens
-promptInput.addEventListener('input', function() {
-  this.style.height = 'auto';
-  this.style.height = (this.scrollHeight) + 'px';
-  if (this.value === '') {
-    this.style.height = 'auto';
-  }
-  updateTokenCounter();
-});
-
-let isGenerating = false;
-let currentAbortController = null;
-let lastGeneratedCodeBlocks = [];
-const stopBtn = document.getElementById('stop-btn');
-
-if (stopBtn) {
-  stopBtn.addEventListener('click', () => {
-    if (isGenerating && currentAbortController) {
-      currentAbortController.abort();
-      currentAbortController = null;
-    }
-  });
+function autoResizePrompt() {
+  promptInput.style.height = "auto";
+  promptInput.style.height = `${Math.min(promptInput.scrollHeight, 220)}px`;
 }
 
-// Handle Enter to send (Shift+Enter for new line)
-promptInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !isCmdPaletteOpen) {
-    e.preventDefault();
-    const text = promptInput.value.trim();
-    if (text.startsWith('/')) {
-      handleSlashCommand(text);
-      return;
-    }
-    if (text && !isGenerating) {
-      playThock(); // Haptic feedback
-      sendMessage(text);
-    }
-  }
-});
+function playTone({ type, start, end, attack, release, gain }) {
+  if (state.isAudioMuted) return;
+  if (audioCtx.state === "suspended") audioCtx.resume();
 
-function handleSlashCommand(text) {
-  const args = text.split(' ');
-  const cmd = args[0].toLowerCase();
-  
-  if (cmd === '/clear') {
-    executeCommand('clear');
-    promptInput.value = '';
-    promptInput.style.height = 'auto';
-    updateTokenCounter();
-  } else if (cmd === '/export') {
-    exportChat();
-    promptInput.value = '';
-    promptInput.style.height = 'auto';
-    updateTokenCounter();
-  } else if (cmd === '/system') {
-    openSystemModal();
-    promptInput.value = '';
-    promptInput.style.height = 'auto';
-    updateTokenCounter();
-  } else {
-    showToast(`Unknown command: ${cmd}`);
+  const osc = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+
+  osc.type = type;
+  osc.frequency.setValueAtTime(start, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(end, audioCtx.currentTime + attack + release);
+
+  gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+  gainNode.gain.linearRampToValueAtTime(gain, audioCtx.currentTime + attack);
+  gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + attack + release);
+
+  osc.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + attack + release + 0.01);
+}
+
+function playThock() {
+  playTone({ type: "triangle", start: 140, end: 48, attack: 0.01, release: 0.045, gain: 0.24 });
+}
+
+function playClick() {
+  playTone({ type: "sine", start: 740, end: 320, attack: 0.004, release: 0.04, gain: 0.12 });
+}
+
+function showToast(message) {
+  const existing = document.querySelector(".toast");
+  if (existing) existing.remove();
+
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  window.setTimeout(() => {
+    toast.remove();
+  }, 2000);
+}
+
+function scrollToBottom() {
+  messagesList.scrollTop = messagesList.scrollHeight;
+}
+
+function setStopVisibility(visible) {
+  stopBtn.classList.toggle("hidden", !visible);
+}
+
+function clearMessages() {
+  messagesList.innerHTML = "";
+  state.lastGeneratedCodeBlocks = [];
+  setEmptyState(true);
+}
+
+function clearConversation({ silent = false } = {}) {
+  state.conversationHistory = [];
+  state.currentSessionId = Date.now().toString();
+  clearMessages();
+  updateStatus(`${state.currentModel} standing by`);
+  if (!silent) showToast("Started a fresh session");
+}
+
+function getRenderableSessions() {
+  return state.chatSessions.filter((session) => Array.isArray(session.history) && session.history.length > 0);
+}
+
+async function saveCurrentSession() {
+  if (state.conversationHistory.length === 0) return;
+
+  const titleSeed = state.conversationHistory.find((message) => message.role === "user");
+  const title = titleSeed
+    ? titleSeed.content.slice(0, 38) + (titleSeed.content.length > 38 ? "..." : "")
+    : "New session";
+
+  const existingIndex = state.chatSessions.findIndex((session) => session.id === state.currentSessionId);
+  const payload = {
+    id: state.currentSessionId,
+    title,
+    timestamp: Date.now(),
+    history: [...state.conversationHistory]
+  };
+
+  if (existingIndex >= 0) state.chatSessions[existingIndex] = payload;
+  else state.chatSessions.unshift(payload);
+
+  state.chatSessions = state.chatSessions
+    .sort((left, right) => right.timestamp - left.timestamp)
+    .slice(0, 25);
+
+  if (window.electronAPI?.saveChats) {
+    await window.electronAPI.saveChats(state.chatSessions);
   }
 }
 
-async function exportChat() {
-  if (conversationHistory.length === 0) {
-    showToast('Nothing to export!');
-    return;
-  }
-  let md = "# Warp-Chat Export\n\n";
-  conversationHistory.forEach(msg => {
-    md += `### ${msg.role.toUpperCase()}\n${msg.content}\n\n---\n\n`;
-  });
-  
-  if (window.electronAPI && window.electronAPI.exportChat) {
-    const result = await window.electronAPI.exportChat(md);
-    if (result) {
-      showToast('Chat exported successfully! 📝');
-    }
-  }
-}
+function decorateCodeBlocks(container) {
+  container.querySelectorAll("pre").forEach((pre) => {
+    if (pre.closest(".code-block-shell")) return;
 
-// Handle Cmd+Shift+C to copy last code block
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'C' && e.shiftKey && e.metaKey) {
-    e.preventDefault();
-    if (lastGeneratedCodeBlocks.length > 0) {
-      const textToCopy = lastGeneratedCodeBlocks[lastGeneratedCodeBlocks.length - 1];
-      window.electronAPI.copyToClipboard(textToCopy);
-      showToast('Copied latest code block!');
-    } else {
-      showToast('No code block to copy');
-    }
-  }
-});
+    const codeEl = pre.querySelector("code");
+    const rawCode = codeEl ? codeEl.innerText : pre.innerText;
+    const languageClass = codeEl?.className
+      ?.split(" ")
+      .find((item) => item.startsWith("language-"));
+    const language = languageClass ? languageClass.replace("language-", "") : "code";
 
-function appendUserMessage(text) {
-  const msgDiv = document.createElement('div');
-  msgDiv.className = 'message-block message-user';
-  
-  const contentDiv = document.createElement('div');
-  contentDiv.className = 'message-user-content';
-  contentDiv.textContent = text; // Plain text for user (or we could use marked too)
-  
-  msgDiv.appendChild(contentDiv);
-  messagesList.appendChild(msgDiv);
-  scrollToBottom();
-}
+    state.lastGeneratedCodeBlocks.push(rawCode);
 
-let conversationHistory = [];
-let chatSessions = [];
-let currentSessionId = Date.now().toString();
-let currentModel = localStorage.getItem('warp_chat_model') || 'qwen3.5:4b';
-let currentTemperature = localStorage.getItem('warp_chat_temp') || '0.7';
-let currentContextWindow = localStorage.getItem('warp_chat_ctx') || '8192';
-let currentSystemPrompt = localStorage.getItem('warp_chat_sys') || '';
+    const shell = document.createElement("div");
+    shell.className = "code-block-shell";
 
-// Function to fake a streaming LLM response for demonstration
-async function sendMessage(text) {
-  promptInput.value = '';
-  promptInput.style.height = 'auto';
-  isGenerating = true;
-  lastGeneratedCodeBlocks = []; // Reset for new generation
-  currentAbortController = new AbortController();
-  
-  if (stopBtn) stopBtn.classList.remove('hidden');
+    const toolbar = document.createElement("div");
+    toolbar.className = "code-block-toolbar";
 
-  // Re-init token counter
-  updateTokenCounter();
+    const label = document.createElement("span");
+    label.className = "code-block-language";
+    label.textContent = language;
 
-  // Remove welcome message if exists
-  const welcome = document.querySelector('.welcome-message');
-  if (welcome) welcome.remove();
-
-  // Hide MOTD
-  const motd = document.getElementById('motd-container');
-  if (motd && !motd.classList.contains('hidden')) {
-    motd.classList.add('hidden');
-  }
-
-  appendUserMessage(text);
-  conversationHistory.push({ role: 'user', content: text });
-
-  // Setup AI block
-  const aiBlock = document.createElement('div');
-  aiBlock.className = 'message-block message-ai is-loading markdown-body';
-  messagesList.appendChild(aiBlock);
-  scrollToBottom();
-
-  // Pause background animation gracefully
-  const meshBg = document.querySelector('.mesh-bg');
-  if (meshBg) meshBg.classList.add('paused-animation');
-
-  let currentText = "";
-
-  try {
-    // Inject Contextual System Prompt
-    let messagesToSend = [...conversationHistory];
-
-    if (currentSystemPrompt) {
-      messagesToSend.unshift({
-        role: 'system',
-        content: currentSystemPrompt
-      });
-    }
-
-    if (window.electronAPI && window.electronAPI.getFolderContents && currentFolderPath) {
-      const filesContext = await window.electronAPI.getFolderContents(currentFolderPath);
-      if (filesContext) {
-        messagesToSend.unshift({
-          role: 'system',
-          content: `You are currently working in the local directory: ${currentFolderPath}. The files inside this directory are: ${filesContext}. Please contextualize your responses to this workspace when relevant.`
-        });
-      }
-    }
-
-    const response = await fetch('http://127.0.0.1:11434/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: currentModel,
-        messages: messagesToSend,
-        stream: true,
-        options: {
-          temperature: parseFloat(currentTemperature),
-          num_ctx: parseInt(currentContextWindow, 10)
-        }
-      }),
-      signal: currentAbortController.signal
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "code-block-action";
+    copyBtn.type = "button";
+    copyBtn.textContent = "Copy";
+    copyBtn.addEventListener("click", () => {
+      window.electronAPI?.copyToClipboard(rawCode);
+      copyBtn.textContent = "Copied";
+      window.setTimeout(() => {
+        copyBtn.textContent = "Copy";
+      }, 1500);
     });
 
-    if (!response.ok) {
-      throw new Error(`Ollama API Error: HTTP ${response.status}`);
-    }
+    toolbar.append(label, copyBtn);
+    pre.parentNode.insertBefore(shell, pre);
+    shell.append(toolbar, pre);
+  });
+}
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      
-      // The last line might be incomplete, keep it in the buffer
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const data = JSON.parse(line);
-          if (data.message && data.message.content) {
-            currentText += data.message.content;
-            
-            // Parse partial markdown
-            const rawHtml = marked.parse(currentText);
-            
-            // Add the AI cursor to the very end during stream
-            const htmlWithCursor = rawHtml.replace(/<\/([^>]+)>$/, '<span class="ai-cursor"></span></$1>');
-            
-            aiBlock.innerHTML = DOMPurify.sanitize(htmlWithCursor);
-            
-            // Simple syntax highlight during stream (exclude mermaid)
-            aiBlock.querySelectorAll('pre code').forEach(block => {
-              if (!block.className.includes('language-mermaid')) {
-                hljs.highlightElement(block);
-              }
-            });
-            scrollToBottom();
-          }
-        } catch (e) {
-          console.error("JSON parse error on streaming line:", line, e);
-        }
-      }
-    }
-
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      currentText += '\n\n*(Generation stopped by user)*';
-      console.log('Generation aborted.');
-    } else {
-      console.error("Fetch Error:", error);
-      aiBlock.classList.remove('markdown-body');
-      aiBlock.classList.add('message-error');
-      currentText = `Error connecting to Ollama: ${error.message}. Make sure the engine is running and model ${currentModel} is pulled.`;
-    }
-  }
-
-  // Final render without cursor
-  aiBlock.innerHTML = DOMPurify.sanitize(marked.parse(currentText));
-
-  // 1. Process KaTeX Math
+function enhanceRenderedContent(container) {
   if (window.renderMathInElement) {
     try {
-      renderMathInElement(aiBlock, {
+      renderMathInElement(container, {
         delimiters: [
-          {left: '$$', right: '$$', display: true},
-          {left: '$', right: '$', display: false},
-          {left: '\\(', right: '\\)', display: false},
-          {left: '\\[', right: '\\]', display: true}
+          { left: "$$", right: "$$", display: true },
+          { left: "$", right: "$", display: false },
+          { left: "\\(", right: "\\)", display: false },
+          { left: "\\[", right: "\\]", display: true }
         ],
         throwOnError: false
       });
-    } catch (e) {
-      console.error("KaTeX error", e);
+    } catch (error) {
+      console.error("KaTeX error", error);
     }
   }
 
-  // 2. Process Highlight.js & Convert Mermaid Blocks
   const mermaidNodes = [];
-  aiBlock.querySelectorAll('pre code').forEach(block => {
-    if (block.className.includes('language-mermaid')) {
-      const mermaidDiv = document.createElement('div');
-      mermaidDiv.className = 'mermaid';
+  container.querySelectorAll("pre code").forEach((block) => {
+    if (block.className.includes("language-mermaid")) {
+      const mermaidDiv = document.createElement("div");
+      mermaidDiv.className = "mermaid";
       mermaidDiv.textContent = block.textContent;
       block.parentNode.replaceChild(mermaidDiv, block);
       mermaidNodes.push(mermaidDiv);
@@ -596,351 +274,798 @@ async function sendMessage(text) {
     }
   });
 
-  // 3. Render Mermaid Diagrams
   if (window.mermaid && mermaidNodes.length > 0) {
-    try {
-      await mermaid.run({ nodes: mermaidNodes });
-    } catch (e) {
-      console.error("Mermaid run error", e);
-    }
-  }
-
-  // Only save to history if it wasn't an error
-  if (!currentText.startsWith('*Error')) {
-    conversationHistory.push({ role: 'assistant', content: currentText });
-    saveCurrentSession();
-  }
-  
-  // Done
-  aiBlock.classList.remove('is-loading');
-  aiBlock.classList.add('is-done');
-  
-  // Post-process the final DOM to add "Copy" buttons to code blocks
-  injectCodeCopyButtons(aiBlock);
-  injectMsgToolbar(aiBlock, currentText);
-  
-  // Terminal blinking cursor removal sound
-  playClick();
-
-  isGenerating = false;
-  currentAbortController = null;
-  if (stopBtn) stopBtn.classList.add('hidden');
-  
-  // Resume background animation if window has focus
-  if (meshBg && document.hasFocus()) {
-    meshBg.classList.remove('paused-animation');
-  }
-}
-
-function injectMsgToolbar(block, fullText) {
-  const toolbar = document.createElement('div');
-  toolbar.className = 'msg-toolbar';
-  
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 'msg-tool-btn';
-  copyBtn.innerHTML = '⎘';
-  copyBtn.title = 'Copy Output';
-  copyBtn.onclick = () => {
-    window.electronAPI.copyToClipboard(fullText);
-    showToast('Copied full AI output!');
-  };
-
-  const regenBtn = document.createElement('button');
-  regenBtn.className = 'msg-tool-btn';
-  regenBtn.innerHTML = '↻';
-  regenBtn.title = 'Regenerate';
-  regenBtn.onclick = () => showToast('Regenerating...'); // Dummy
-
-  const pinBtn = document.createElement('button');
-  pinBtn.className = 'msg-tool-btn';
-  pinBtn.innerHTML = '📌';
-  pinBtn.title = 'Pin to Context';
-  pinBtn.onclick = () => showToast('Pinned to context'); // Dummy
-
-  toolbar.appendChild(pinBtn);
-  toolbar.appendChild(regenBtn);
-  toolbar.appendChild(copyBtn);
-  
-  block.appendChild(toolbar);
-}
-
-function injectCodeCopyButtons(container) {
-  const preElements = container.querySelectorAll('pre');
-  
-  preElements.forEach((pre) => {
-    // Save raw code for Cmd+Shift+C
-    const codeEl = pre.querySelector('code');
-    const rawCode = codeEl ? codeEl.innerText : pre.innerText;
-    lastGeneratedCodeBlocks.push(rawCode);
-
-    // Wrap the pre inside a relative div
-    const wrapper = document.createElement('div');
-    wrapper.className = 'code-block-wrapper';
-    
-    // Create copy button
-    const btn = document.createElement('button');
-    btn.className = 'code-copy-btn';
-    btn.textContent = 'Copy';
-    
-    btn.addEventListener('click', () => {
-      window.electronAPI.copyToClipboard(rawCode);
-      btn.textContent = 'Copied!';
-      btn.style.color = 'var(--text-main)';
-      setTimeout(() => {
-        btn.textContent = 'Copy';
-        btn.style.color = 'var(--text-muted)';
-      }, 2000);
+    mermaid.run({ nodes: mermaidNodes }).catch((error) => {
+      console.error("Mermaid run error", error);
     });
-
-    // Replace pre with wrapper > pre + btn
-    pre.parentNode.insertBefore(wrapper, pre);
-    wrapper.appendChild(pre);
-    wrapper.appendChild(btn);
-  });
-}
-
-function scrollToBottom() {
-  messagesList.scrollTop = messagesList.scrollHeight;
-}
-
-// Temporary simple toast system
-function showToast(message) {
-  const toast = document.createElement('div');
-  toast.innerText = message;
-  toast.style.position = 'fixed';
-  toast.style.bottom = '80px';
-  toast.style.left = '50%';
-  toast.style.transform = 'translateX(-50%)';
-  toast.style.background = 'rgba(255, 255, 255, 0.1)';
-  toast.style.color = 'white';
-  toast.style.padding = '8px 16px';
-  toast.style.borderRadius = '20px';
-  toast.style.fontSize = '12px';
-  toast.style.backdropFilter = 'blur(10px)';
-  toast.style.zIndex = '1000';
-  toast.style.transition = 'opacity 0.3s ease';
-  
-  document.body.appendChild(toast);
-  
-  setTimeout(() => {
-    toast.style.opacity = '0';
-    setTimeout(() => toast.remove(), 300);
-  }, 2000);
-}
-
-// Global Window Focus / Blur Hooks
-window.addEventListener('blur', () => {
-  const meshBg = document.querySelector('.mesh-bg');
-  if (meshBg) meshBg.classList.add('paused-animation');
-});
-
-window.addEventListener('focus', () => {
-  const meshBg = document.querySelector('.mesh-bg');
-  if (meshBg && !isGenerating) {
-    meshBg.classList.remove('paused-animation');
   }
-});
 
-// --- Settings Modal Logic ---
-const settingsModalOverlay = document.getElementById('settings-modal-overlay');
-const modelSelect = document.getElementById('model-select');
-const tempSlider = document.getElementById('temp-slider');
-const tempVal = document.getElementById('temp-val');
-const ctxSlider = document.getElementById('ctx-slider');
-const ctxVal = document.getElementById('ctx-val');
-const settingsCloseBtn = document.getElementById('settings-close-btn');
-const settingsSaveBtn = document.getElementById('settings-save-btn');
+  decorateCodeBlocks(container);
+}
+
+function createAssistantBlock() {
+  const block = document.createElement("article");
+  block.className = "message-block message-ai is-loading";
+
+  const surface = document.createElement("div");
+  surface.className = "message-surface";
+
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+
+  const metaLeft = document.createElement("div");
+  metaLeft.className = "message-meta-left";
+
+  const role = document.createElement("span");
+  role.className = "message-role";
+  role.textContent = "Assistant";
+
+  const model = document.createElement("span");
+  model.className = "message-model";
+  model.textContent = state.currentModel;
+
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "message-action hidden";
+  copyBtn.type = "button";
+  copyBtn.textContent = "Copy response";
+  copyBtn.addEventListener("click", () => {
+    window.electronAPI?.copyToClipboard(block.dataset.rawOutput || "");
+    showToast("Copied response");
+  });
+
+  actions.append(copyBtn);
+  metaLeft.append(role, model);
+  meta.append(metaLeft, actions);
+
+  const body = document.createElement("div");
+  body.className = "message-body markdown-body";
+
+  surface.append(meta, body);
+  block.appendChild(surface);
+
+  return { block, body, copyBtn };
+}
+
+function renderAssistantContent(body, text, { showCursor = false } = {}) {
+  const rawHtml = marked.parse(text || "");
+  const html = showCursor
+    ? rawHtml.replace(/<\/([^>]+)>$/, '<span class="ai-cursor"></span></$1>')
+    : rawHtml;
+
+  body.innerHTML = DOMPurify.sanitize(html);
+}
+
+function appendUserMessage(text) {
+  const block = document.createElement("article");
+  block.className = "message-block message-user";
+
+  const content = document.createElement("div");
+  content.className = "message-user-content";
+  content.textContent = text;
+
+  block.appendChild(content);
+  messagesList.appendChild(block);
+  scrollToBottom();
+}
+
+function renderConversation() {
+  messagesList.innerHTML = "";
+  state.lastGeneratedCodeBlocks = [];
+
+  state.conversationHistory.forEach((message) => {
+    if (message.role === "user") {
+      appendUserMessage(message.content);
+      return;
+    }
+
+    const { block, body, copyBtn } = createAssistantBlock();
+    renderAssistantContent(body, message.content);
+    enhanceRenderedContent(body);
+    block.dataset.rawOutput = message.content;
+    copyBtn.classList.remove("hidden");
+    block.classList.remove("is-loading");
+    messagesList.appendChild(block);
+  });
+
+  setEmptyState(state.conversationHistory.length === 0);
+  scrollToBottom();
+}
+
+async function loadStoredChats() {
+  if (!window.electronAPI?.loadChats) return;
+  state.chatSessions = (await window.electronAPI.loadChats()) || [];
+}
 
 async function fetchOllamaModels() {
   try {
-    const res = await fetch('http://127.0.0.1:11434/api/tags');
-    if (!res.ok) throw new Error('Network response was not ok');
-    const data = await res.json();
-    modelSelect.innerHTML = '';
-    if (data.models && data.models.length > 0) {
-      data.models.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m.name;
-        opt.textContent = m.name;
-        if (m.name === currentModel) opt.selected = true;
-        modelSelect.appendChild(opt);
-      });
-    } else {
-      modelSelect.innerHTML = '<option value="">No models found</option>';
-    }
-  } catch (err) {
-    console.error("Failed to fetch Ollama models", err);
-    modelSelect.innerHTML = `<option value="${currentModel}">${currentModel} (offline)</option>`;
+    const response = await fetch("http://127.0.0.1:11434/api/tags");
+    if (!response.ok) throw new Error("Network response was not ok");
+    const data = await response.json();
+    return data.models || [];
+  } catch (error) {
+    console.error("Failed to fetch Ollama models", error);
+    return [];
   }
+}
+
+async function populateSettingsModels() {
+  const models = await fetchOllamaModels();
+  modelSelect.innerHTML = "";
+
+  if (models.length === 0) {
+    modelSelect.innerHTML = `<option value="${state.currentModel}">${state.currentModel} (offline)</option>`;
+    return;
+  }
+
+  models.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.name;
+    option.textContent = item.name;
+    if (item.name === state.currentModel) option.selected = true;
+    modelSelect.appendChild(option);
+  });
 }
 
 function openSettingsModal() {
-  settingsModalOverlay.classList.remove('hidden');
-  
-  tempSlider.value = currentTemperature;
-  tempVal.textContent = currentTemperature;
-  ctxSlider.value = currentContextWindow;
-  ctxVal.textContent = currentContextWindow;
-  
-  fetchOllamaModels();
+  settingsModalOverlay.classList.remove("hidden");
+  tempSlider.value = state.currentTemperature;
+  tempVal.textContent = state.currentTemperature;
+  ctxSlider.value = state.currentContextWindow;
+  ctxVal.textContent = state.currentContextWindow;
+  populateSettingsModels();
 }
 
 function closeSettingsModal() {
-  settingsModalOverlay.classList.add('hidden');
+  settingsModalOverlay.classList.add("hidden");
   promptInput.focus();
 }
 
-tempSlider.addEventListener('input', (e) => tempVal.textContent = e.target.value);
-ctxSlider.addEventListener('input', (e) => ctxVal.textContent = e.target.value);
-
-settingsCloseBtn.addEventListener('click', closeSettingsModal);
-
-settingsSaveBtn.addEventListener('click', () => {
-  currentModel = modelSelect.value || currentModel;
-  currentTemperature = tempSlider.value;
-  currentContextWindow = ctxSlider.value;
-
-  localStorage.setItem('warp_chat_model', currentModel);
-  localStorage.setItem('warp_chat_temp', currentTemperature);
-  localStorage.setItem('warp_chat_ctx', currentContextWindow);
-
-  closeSettingsModal();
-  showToast('Settings saved ⚙️');
-  updateTokenCounter();
-});
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    if (!settingsModalOverlay.classList.contains('hidden')) {
-      closeSettingsModal();
-    } else if (!systemModalOverlay.classList.contains('hidden')) {
-      closeSystemModal();
-    }
-  }
-});
-
-// --- System Prompt Modal Logic ---
-const systemModalOverlay = document.getElementById('system-modal-overlay');
-const systemInput = document.getElementById('system-input');
-const systemCloseBtn = document.getElementById('system-close-btn');
-const systemSaveBtn = document.getElementById('system-save-btn');
-
 function openSystemModal() {
-  systemModalOverlay.classList.remove('hidden');
-  systemInput.value = currentSystemPrompt;
+  systemModalOverlay.classList.remove("hidden");
+  systemInput.value = state.currentSystemPrompt;
   systemInput.focus();
 }
 
 function closeSystemModal() {
-  systemModalOverlay.classList.add('hidden');
+  systemModalOverlay.classList.add("hidden");
   promptInput.focus();
 }
 
-systemCloseBtn.addEventListener('click', closeSystemModal);
-
-systemSaveBtn.addEventListener('click', () => {
-  currentSystemPrompt = systemInput.value.trim();
-  localStorage.setItem('warp_chat_sys', currentSystemPrompt);
-  closeSystemModal();
-  showToast('System prompt saved 🧠');
-});
-
-// --- History Sessions Logic ---
-
-async function saveCurrentSession() {
-  if (conversationHistory.length === 0) return;
-  
-  let sessionIndex = chatSessions.findIndex(s => s.id === currentSessionId);
-  const firstUserMsg = conversationHistory.find(m => m.role === 'user');
-  const title = firstUserMsg ? firstUserMsg.content.substring(0, 30) + (firstUserMsg.content.length > 30 ? '...' : '') : 'New Chat';
-
-  if (sessionIndex !== -1) {
-    chatSessions[sessionIndex].history = [...conversationHistory];
-    chatSessions[sessionIndex].title = title;
-  } else {
-    chatSessions.unshift({
-      id: currentSessionId,
-      title: title,
-      timestamp: Date.now(),
-      history: [...conversationHistory]
-    });
-  }
-  
-  if (window.electronAPI && window.electronAPI.saveChats) {
-    await window.electronAPI.saveChats(chatSessions);
-  }
-  renderHistorySidebar();
+async function setWorkspace(targetPath) {
+  if (!targetPath) return;
+  state.currentFolderPath = targetPath;
+  localStorage.setItem("warp_chat_workspace", targetPath);
+  rememberWorkspace(targetPath);
+  updateWorkspaceUI();
+  showToast(`Workspace set to ${basename(targetPath)}`);
 }
 
-function renderHistorySidebar() {
-  if (!historyList) return;
-  historyList.innerHTML = '';
-  
-  if (chatSessions.length === 0) {
-    historyList.innerHTML = '<li class="empty-projects">No history found.</li>';
+async function chooseWorkspace() {
+  closeCmdPalette();
+  const folderPath = await window.electronAPI?.selectFolder?.();
+  if (folderPath) await setWorkspace(folderPath);
+}
+
+async function initWorkspace() {
+  const storedWorkspace = localStorage.getItem("warp_chat_workspace");
+  if (storedWorkspace) {
+    state.currentFolderPath = storedWorkspace;
+  } else if (window.electronAPI?.getDefaultPath) {
+    state.currentFolderPath = await window.electronAPI.getDefaultPath();
+  }
+
+  if (state.currentFolderPath) rememberWorkspace(state.currentFolderPath);
+  updateWorkspaceUI();
+}
+
+function paletteRootItems() {
+  return [
+    {
+      label: "Switch model",
+      detail: state.currentModel,
+      meta: "models",
+      action: "open-models"
+    },
+    {
+      label: "Select workspace",
+      detail: basename(state.currentFolderPath),
+      meta: "workspace",
+      action: "open-workspaces"
+    },
+    {
+      label: "Recent sessions",
+      detail: `${getRenderableSessions().length} saved`,
+      meta: "sessions",
+      action: "open-sessions"
+    },
+    {
+      label: "System prompt",
+      detail: state.currentSystemPrompt ? "Configured" : "Empty",
+      meta: "prompt",
+      action: "open-system"
+    },
+    {
+      label: "Advanced settings",
+      detail: `temp ${state.currentTemperature} · ctx ${state.currentContextWindow}`,
+      meta: "settings",
+      action: "open-settings"
+    },
+    {
+      label: "Export chat",
+      detail: "Save transcript as markdown",
+      meta: "export",
+      action: "export"
+    },
+    {
+      label: "Clear chat",
+      detail: "Start a fresh local session",
+      meta: "clear",
+      action: "clear"
+    },
+    {
+      label: state.isAudioMuted ? "Enable sounds" : "Disable sounds",
+      detail: "Toggle restrained feedback",
+      meta: "audio",
+      action: "toggle-sound"
+    }
+  ];
+}
+
+async function buildPaletteItems(mode) {
+  if (mode === "models") {
+    const models = await fetchOllamaModels();
+    if (models.length === 0) {
+      return [
+        {
+          label: state.currentModel,
+          detail: "Current model · engine offline",
+          meta: "current",
+          action: "select-model",
+          value: state.currentModel
+        }
+      ];
+    }
+
+    return models.map((item) => ({
+      label: item.name,
+      detail: item.name === state.currentModel ? "Current model" : "Available locally",
+      meta: item.name === state.currentModel ? "current" : "local",
+      action: "select-model",
+      value: item.name
+    }));
+  }
+
+  if (mode === "workspaces") {
+    const recents = state.workspacePaths.map((targetPath) => ({
+      label: basename(targetPath),
+      detail: targetPath,
+      meta: targetPath === state.currentFolderPath ? "current" : "recent",
+      action: "select-workspace",
+      value: targetPath
+    }));
+
+    return [
+      {
+        label: "Choose folder…",
+        detail: "Open the macOS folder picker",
+        meta: "browse",
+        action: "choose-workspace"
+      },
+      ...recents
+    ];
+  }
+
+  if (mode === "sessions") {
+    const sessions = getRenderableSessions();
+    if (sessions.length === 0) {
+      return [
+        {
+          label: "No saved sessions yet",
+          detail: "Recent chats appear here after a response completes",
+          meta: "",
+          action: "noop",
+          disabled: true
+        }
+      ];
+    }
+
+    return sessions.map((session) => ({
+      label: session.title,
+      detail: new Date(session.timestamp).toLocaleString(),
+      meta: session.id === state.currentSessionId ? "current" : "saved",
+      action: "load-session",
+      value: session.id
+    }));
+  }
+
+  return paletteRootItems();
+}
+
+function paletteTitle(mode) {
+  if (mode === "models") return "Models";
+  if (mode === "workspaces") return "Workspaces";
+  if (mode === "sessions") return "Recent Sessions";
+  return "Controls";
+}
+
+function filteredPaletteItems() {
+  const query = cmdInput.value.trim().toLowerCase();
+  if (!query) return state.paletteItems;
+
+  return state.paletteItems.filter((item) => {
+    return [item.label, item.detail, item.meta]
+      .filter(Boolean)
+      .some((value) => value.toLowerCase().includes(query));
+  });
+}
+
+function renderPaletteList() {
+  const items = filteredPaletteItems();
+  if (items.length === 0) {
+    cmdResults.innerHTML = '<div class="cmd-empty">No matching controls.</div>';
     return;
   }
-  
-  chatSessions.forEach(session => {
-    const li = document.createElement('li');
-    li.className = `project-item ${session.id === currentSessionId ? 'active' : ''}`;
-    
-    li.innerHTML = `<span class="project-icon" style="opacity:0.6">💬</span> <span class="project-name" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${session.title}">${session.title}</span>`;
-    
-    li.addEventListener('click', () => {
-      loadSession(session.id);
-    });
-    
-    historyList.appendChild(li);
-  });
-}
 
-function loadSession(id) {
-  const session = chatSessions.find(s => s.id === id);
-  if (!session) return;
-  
-  currentSessionId = id;
-  conversationHistory = [...session.history];
-  
-  const messagesDiv = document.getElementById('messages');
-  messagesDiv.innerHTML = '';
-  
-  session.history.forEach(msg => {
-    const block = document.createElement('div');
-    block.className = `message-block message-${msg.role}`;
-    
-    if (msg.role === 'user') {
-      block.innerHTML = `<div class="message-user-content">${msg.content}</div>`;
-    } else {
-      block.innerHTML = DOMPurify.sanitize(marked.parse(msg.content));
-      
-      if (window.renderMathInElement) {
-        try {
-          renderMathInElement(block, {
-            delimiters: [
-              {left: '$$', right: '$$', display: true},
-              {left: '$', right: '$', display: false},
-              {left: '\\(', right: '\\)', display: false},
-              {left: '\\[', right: '\\]', display: true}
-            ],
-            throwOnError: false
-          });
-        } catch (e) {}
-      }
-      block.querySelectorAll('pre code').forEach(c => {
-         if(!c.className.includes('language-mermaid')) hljs.highlightElement(c);
-      });
+  if (state.selectedPaletteIndex >= items.length) state.selectedPaletteIndex = 0;
+
+  cmdResults.innerHTML = "";
+  items.forEach((item, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `cmd-item${index === state.selectedPaletteIndex ? " selected" : ""}`;
+    button.disabled = Boolean(item.disabled);
+
+    const main = document.createElement("div");
+    main.className = "cmd-item-main";
+
+    const label = document.createElement("span");
+    label.className = "cmd-item-label";
+    label.textContent = item.label;
+
+    main.appendChild(label);
+
+    if (item.detail) {
+      const detail = document.createElement("span");
+      detail.className = "cmd-item-detail";
+      detail.textContent = item.detail;
+      main.appendChild(detail);
     }
-    messagesDiv.appendChild(block);
+
+    const meta = document.createElement("span");
+    meta.className = "cmd-item-meta";
+    meta.textContent = item.meta || "";
+
+    button.append(main, meta);
+    button.addEventListener("mouseenter", () => {
+      state.selectedPaletteIndex = index;
+      renderPaletteList();
+    });
+    button.addEventListener("click", () => {
+      void executePaletteItem(items[index]);
+    });
+
+    cmdResults.appendChild(button);
   });
-  
-  scrollToBottom();
-  renderHistorySidebar();
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-  if (window.electronAPI && window.electronAPI.loadChats) {
-    chatSessions = await window.electronAPI.loadChats() || [];
-    renderHistorySidebar();
+async function renderPalette(mode = state.paletteMode) {
+  state.paletteMode = mode;
+  state.paletteItems = await buildPaletteItems(mode);
+  state.selectedPaletteIndex = 0;
+  cmdModeLabel.textContent = paletteTitle(mode);
+  cmdBackBtn.classList.toggle("hidden", mode === "root");
+  renderPaletteList();
+}
+
+async function openCmdPalette(mode = "root") {
+  state.isCmdPaletteOpen = true;
+  cmdOverlay.classList.remove("hidden");
+  cmdInput.value = "";
+  await renderPalette(mode);
+  cmdInput.focus();
+}
+
+function closeCmdPalette() {
+  state.isCmdPaletteOpen = false;
+  cmdOverlay.classList.add("hidden");
+  promptInput.focus();
+}
+
+async function loadSession(sessionId) {
+  const session = state.chatSessions.find((item) => item.id === sessionId);
+  if (!session) return;
+
+  state.currentSessionId = session.id;
+  state.conversationHistory = [...session.history];
+  renderConversation();
+  updateStatus(`${state.currentModel} standing by`);
+  closeCmdPalette();
+}
+
+async function executePaletteItem(item) {
+  if (!item || item.disabled) return;
+
+  if (item.action === "open-models") return renderPalette("models");
+  if (item.action === "open-workspaces") return renderPalette("workspaces");
+  if (item.action === "open-sessions") return renderPalette("sessions");
+  if (item.action === "open-system") {
+    closeCmdPalette();
+    openSystemModal();
+    return;
   }
+  if (item.action === "open-settings") {
+    closeCmdPalette();
+    openSettingsModal();
+    return;
+  }
+  if (item.action === "select-model") {
+    state.currentModel = item.value;
+    localStorage.setItem("warp_chat_model", state.currentModel);
+    updateModelUI();
+    updateStatus(`${state.currentModel} selected`);
+    closeCmdPalette();
+    showToast(`Model set to ${state.currentModel}`);
+    return;
+  }
+  if (item.action === "choose-workspace") {
+    await chooseWorkspace();
+    return;
+  }
+  if (item.action === "select-workspace") {
+    await setWorkspace(item.value);
+    closeCmdPalette();
+    return;
+  }
+  if (item.action === "load-session") {
+    await loadSession(item.value);
+    return;
+  }
+  if (item.action === "export") {
+    closeCmdPalette();
+    await exportChat();
+    return;
+  }
+  if (item.action === "clear") {
+    closeCmdPalette();
+    clearConversation();
+    return;
+  }
+  if (item.action === "toggle-sound") {
+    state.isAudioMuted = !state.isAudioMuted;
+    localStorage.setItem("warp_chat_muted", String(state.isAudioMuted));
+    closeCmdPalette();
+    showToast(state.isAudioMuted ? "Sounds off" : "Sounds on");
+    if (!state.isAudioMuted) playClick();
+  }
+}
+
+async function exportChat() {
+  if (state.conversationHistory.length === 0) {
+    showToast("Nothing to export");
+    return;
+  }
+
+  let markdownContent = "# Warp-Chat Export\n\n";
+  state.conversationHistory.forEach((message) => {
+    markdownContent += `### ${message.role.toUpperCase()}\n${message.content}\n\n---\n\n`;
+  });
+
+  if (window.electronAPI?.exportChat) {
+    const result = await window.electronAPI.exportChat(markdownContent);
+    if (result) showToast("Chat exported");
+  }
+}
+
+function handleSlashCommand(text) {
+  const command = text.split(" ")[0].toLowerCase();
+
+  if (command === "/clear") {
+    clearConversation();
+  } else if (command === "/export") {
+    void exportChat();
+  } else if (command === "/system") {
+    openSystemModal();
+  } else {
+    showToast(`Unknown command: ${command}`);
+  }
+
+  promptInput.value = "";
+  autoResizePrompt();
+  updateTokenCounter();
+}
+
+async function sendMessage(text) {
+  promptInput.value = "";
+  autoResizePrompt();
+  updateTokenCounter();
+
+  state.isGenerating = true;
+  state.currentAbortController = new AbortController();
+  state.lastGeneratedCodeBlocks = [];
+
+  setEmptyState(false);
+  setStopVisibility(true);
+  updateStatus(`${state.currentModel} responding`);
+
+  const meshBg = document.querySelector(".mesh-bg");
+  meshBg?.classList.add("paused-animation");
+
+  appendUserMessage(text);
+  state.conversationHistory.push({ role: "user", content: text });
+
+  const { block, body, copyBtn } = createAssistantBlock();
+  messagesList.appendChild(block);
+  scrollToBottom();
+
+  let currentText = "";
+  let renderScheduled = false;
+
+  const scheduleRender = () => {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    requestAnimationFrame(() => {
+      renderScheduled = false;
+      renderAssistantContent(body, currentText, { showCursor: true });
+      scrollToBottom();
+    });
+  };
+
+  try {
+    const messagesToSend = [...state.conversationHistory];
+
+    if (state.currentSystemPrompt) {
+      messagesToSend.unshift({ role: "system", content: state.currentSystemPrompt });
+    }
+
+    if (window.electronAPI?.getFolderContents && state.currentFolderPath) {
+      const filesContext = await window.electronAPI.getFolderContents(state.currentFolderPath);
+      if (filesContext) {
+        messagesToSend.unshift({
+          role: "system",
+          content: `You are currently working in the local directory: ${state.currentFolderPath}. The files inside this directory are: ${filesContext}. Please contextualize your responses to this workspace when relevant.`
+        });
+      }
+    }
+
+    const response = await fetch("http://127.0.0.1:11434/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: state.currentModel,
+        messages: messagesToSend,
+        stream: true,
+        options: {
+          temperature: Number.parseFloat(state.currentTemperature),
+          num_ctx: Number.parseInt(state.currentContextWindow, 10)
+        }
+      }),
+      signal: state.currentAbortController.signal
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const data = JSON.parse(line);
+          if (data.message?.content) {
+            currentText += data.message.content;
+            scheduleRender();
+          }
+        } catch (error) {
+          console.error("JSON parse error on streaming line:", line, error);
+        }
+      }
+    }
+  } catch (error) {
+    if (error.name === "AbortError") {
+      currentText += "\n\nGeneration stopped.";
+    } else {
+      console.error("Fetch Error:", error);
+      block.classList.add("message-error");
+      currentText = `Error connecting to Ollama: ${error.message}. Make sure the engine is running and model ${state.currentModel} is available.`;
+      updateStatus("Local model unavailable");
+    }
+  }
+
+  renderAssistantContent(body, currentText);
+  enhanceRenderedContent(body);
+
+  block.dataset.rawOutput = currentText;
+  block.classList.remove("is-loading");
+  copyBtn.classList.remove("hidden");
+
+  if (!block.classList.contains("message-error")) {
+    state.conversationHistory.push({ role: "assistant", content: currentText });
+    await saveCurrentSession();
+    updateStatus(`${state.currentModel} standing by`);
+  }
+
+  playClick();
+  state.isGenerating = false;
+  state.currentAbortController = null;
+  setStopVisibility(false);
+  meshBg?.classList.remove("paused-animation");
+  scrollToBottom();
+}
+
+workspacePill.addEventListener("click", () => {
+  void openCmdPalette("workspaces");
+});
+
+modelPill.addEventListener("click", () => {
+  void openCmdPalette("models");
+});
+
+stopBtn.addEventListener("click", () => {
+  if (state.isGenerating && state.currentAbortController) {
+    state.currentAbortController.abort();
+    state.currentAbortController = null;
+  }
+});
+
+promptInput.addEventListener("input", () => {
+  autoResizePrompt();
+  updateTokenCounter();
+});
+
+promptInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    const text = promptInput.value.trim();
+    if (!text || state.isGenerating) return;
+    if (text.startsWith("/")) return handleSlashCommand(text);
+    playThock();
+    void sendMessage(text);
+  }
+});
+
+cmdInput.addEventListener("input", () => {
+  state.selectedPaletteIndex = 0;
+  renderPaletteList();
+});
+
+cmdInput.addEventListener("keydown", (event) => {
+  const items = filteredPaletteItems();
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    state.selectedPaletteIndex = items.length === 0 ? 0 : (state.selectedPaletteIndex + 1) % items.length;
+    renderPaletteList();
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    state.selectedPaletteIndex = items.length === 0 ? 0 : (state.selectedPaletteIndex - 1 + items.length) % items.length;
+    renderPaletteList();
+    return;
+  }
+
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void executePaletteItem(items[state.selectedPaletteIndex]);
+  }
+});
+
+cmdBackBtn.addEventListener("click", () => {
+  void renderPalette("root");
+});
+
+settingsCloseBtn.addEventListener("click", closeSettingsModal);
+settingsSaveBtn.addEventListener("click", () => {
+  state.currentModel = modelSelect.value || state.currentModel;
+  state.currentTemperature = tempSlider.value;
+  state.currentContextWindow = ctxSlider.value;
+
+  localStorage.setItem("warp_chat_model", state.currentModel);
+  localStorage.setItem("warp_chat_temp", state.currentTemperature);
+  localStorage.setItem("warp_chat_ctx", state.currentContextWindow);
+
+  updateModelUI();
+  updateTokenCounter();
+  updateStatus(`${state.currentModel} selected`);
+  closeSettingsModal();
+  showToast("Settings saved");
+});
+
+tempSlider.addEventListener("input", (event) => {
+  tempVal.textContent = event.target.value;
+});
+
+ctxSlider.addEventListener("input", (event) => {
+  ctxVal.textContent = event.target.value;
+});
+
+systemCloseBtn.addEventListener("click", closeSystemModal);
+systemSaveBtn.addEventListener("click", () => {
+  state.currentSystemPrompt = systemInput.value.trim();
+  localStorage.setItem("warp_chat_sys", state.currentSystemPrompt);
+  closeSystemModal();
+  showToast(state.currentSystemPrompt ? "System prompt saved" : "System prompt cleared");
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.metaKey && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    if (state.isCmdPaletteOpen) closeCmdPalette();
+    else void openCmdPalette("root");
+    return;
+  }
+
+  if (event.metaKey && event.shiftKey && event.key.toLowerCase() === "c") {
+    event.preventDefault();
+    const code = state.lastGeneratedCodeBlocks[state.lastGeneratedCodeBlocks.length - 1];
+    if (code) {
+      window.electronAPI?.copyToClipboard(code);
+      showToast("Copied latest code block");
+    } else {
+      showToast("No code block available");
+    }
+    return;
+  }
+
+  if (event.key === "Escape") {
+    if (state.isCmdPaletteOpen) {
+      closeCmdPalette();
+      return;
+    }
+    if (!settingsModalOverlay.classList.contains("hidden")) {
+      closeSettingsModal();
+      return;
+    }
+    if (!systemModalOverlay.classList.contains("hidden")) {
+      closeSystemModal();
+      return;
+    }
+    if (state.isGenerating && state.currentAbortController) {
+      state.currentAbortController.abort();
+      state.currentAbortController = null;
+    }
+    return;
+  }
+
+  if (
+    event.target !== promptInput &&
+    !state.isCmdPaletteOpen &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    event.key.length === 1
+  ) {
+    promptInput.focus();
+  }
+});
+
+window.addEventListener("blur", () => {
+  document.querySelector(".mesh-bg")?.classList.add("paused-animation");
+});
+
+window.addEventListener("focus", () => {
+  if (!state.isGenerating) document.querySelector(".mesh-bg")?.classList.remove("paused-animation");
+});
+
+document.addEventListener("DOMContentLoaded", async () => {
+  await loadStoredChats();
+  await initWorkspace();
+  updateModelUI();
+  updateStatus(`${state.currentModel} standing by`);
+  updateTokenCounter();
+  autoResizePrompt();
+  setStopVisibility(false);
+  setEmptyState(true);
 });
