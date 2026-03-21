@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warp-Chat MVP</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Highlight.js theme -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/tokyo-night-dark.min.css">
+</head>
+<body>
+  <!-- Command Palette Overlay -->
+  <div id="cmd-palette-overlay" class="cmd-palette-overlay hidden">
+    <div class="cmd-palette">
+      <div class="cmd-input-wrapper">
+        <span class="cmd-icon">⌘</span>
+        <input type="text" id="cmd-input" placeholder="Search commands..." autocomplete="off">
+      </div>
+      <div class="cmd-results" id="cmd-results">
+        <div class="cmd-item selected" data-action="clear">
+          <span><span style="opacity:0.5;margin-right:8px;">✦</span> Clear Chat</span>
+          <span class="cmd-shortcut">↵</span>
+        </div>
+        <div class="cmd-item" data-action="model">
+          <span><span style="opacity:0.5;margin-right:8px;">★</span> Switch Model</span>
+          <span class="cmd-shortcut">Llama-3</span>
+        </div>
+        <div class="cmd-item" data-action="prompt">
+          <span><span style="opacity:0.5;margin-right:8px;">⚙</span> Settings</span>
+        </div>
+        <div class="cmd-item" data-action="toggle-sound">
+          <span><span style="opacity:0.5;margin-right:8px;">🔊</span> Toggle Sounds</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal Overlay -->
+  <div id="settings-modal-overlay" class="cmd-palette-overlay hidden">
+    <div class="settings-modal">
+      <div class="settings-header">
+        <h2>⚙ Settings</h2>
+      </div>
+      <div class="settings-content">
+        <div class="settings-field">
+          <label for="model-select">AI Model</label>
+          <select id="model-select" class="settings-input">
+            <option value="qwen3.5:4b">Loading models...</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <label for="temp-slider">Temperature: <span id="temp-val">0.7</span></label>
+          <input type="range" id="temp-slider" min="0" max="2" step="0.1" value="0.7" class="settings-slider">
+        </div>
+        <div class="settings-field">
+          <label for="ctx-slider">Context Window: <span id="ctx-val">8192</span></label>
+          <input type="range" id="ctx-slider" min="2048" max="131072" step="2048" value="8192" class="settings-slider">
+        </div>
+      </div>
+      <div class="settings-footer">
+        <button id="settings-close-btn" class="settings-btn">Cancel</button>
+        <button id="settings-save-btn" class="settings-btn primary">Save & Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- System Prompt Modal Overlay -->
+  <div id="system-modal-overlay" class="cmd-palette-overlay hidden">
+    <div class="settings-modal">
+      <div class="settings-header">
+        <h2>🧠 Master System Prompt</h2>
+      </div>
+      <div class="settings-content">
+        <div class="settings-field">
+          <label for="system-input">Define LLM Behavior Guidelines</label>
+          <textarea id="system-input" class="settings-input system-textarea" rows="5" placeholder="E.g., You are an expert Rust developer. Be concise. Never use generic libraries."></textarea>
+        </div>
+      </div>
+      <div class="settings-footer">
+        <button id="system-close-btn" class="settings-btn">Cancel</button>
+        <button id="system-save-btn" class="settings-btn primary">Save Prompt</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mesh Gradient Background for empty state vibe -->
+  <div class="mesh-bg"></div>
+
+  <!-- Draggable top area for macOS hiddenInset titleBar -->
+  <div class="titlebar-drag-region">
+    <div class="hud-status">
+      <span class="status-dot"></span>
+      <span class="status-text" id="status-text">LLM Engine: Standby</span>
+    </div>
+  </div>
+
+  <div class="app-layout">
+    <!-- Projects Sidebar (Hidden by default) -->
+    <nav id="projects-sidebar" class="projects-sidebar hidden" role="navigation" aria-label="Projects Sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Projects</span>
+        <button id="add-project-btn" class="icon-btn" title="Add Folder (⌘O)">+</button>
+      </div>
+      <div class="sidebar-content">
+        <ul id="projects-list" class="projects-list">
+          <!-- Populated by JS -->
+          <li class="empty-projects">No local folder selected.</li>
+        </ul>
+      </div>
+      <div class="sidebar-footer">
+        <span class="sidebar-hint">⌘B to toggle</span>
+      </div>
+    </nav>
+
+    <main class="chat-container" role="main">
+      <!-- Welcome MOTD overlay -->
+    <div id="motd-container" class="motd-container">
+      <div class="motd-logo">KOD ÄR KRAFT</div>
+      <div class="motd-shortcuts">
+        <div class="shortcut-pill">
+          <span class="keycap">↵</span> Send
+        </div>
+        <div class="shortcut-pill">
+          <span class="keycap">⌘</span><span class="keycap">⇧</span><span class="keycap">C</span> Copy Code
+        </div>
+      </div>
+    </div>
+
+    <div id="messages" class="messages-list" aria-live="polite" aria-relevant="additions">
+      <!-- Messages will appear here -->
+      <div class="welcome-message text-muted">Awaiting your command...</div>
+    </div>
+    
+    <div class="input-container">
+      <!-- Context & Token Indicator -->
+      <div class="input-toolbar">
+        <!-- New Contextual Folder Display -->
+        <div id="current-folder-text" class="current-folder-display" style="margin-right: auto;">
+          <span style="opacity:0.6;">📂</span> 
+          <span style="opacity:0.6;">Working in:</span> 
+          <strong id="active-folder-name" title="Global" style="direction: rtl; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; max-width: 200px; display: inline-block; vertical-align: bottom;">Global</strong>
+        </div>
+        <button id="stop-btn" class="icon-btn hidden" style="font-size: 10px; margin-right: 10px; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); font-family: var(--font-ui); cursor: pointer; color: var(--text-muted);">⏹ Esc to Stop</button>
+        <span id="token-counter" class="token-counter">0 / 8,192 ctx</span>
+      </div>
+      
+      <div class="input-wrapper">
+        <span class="prompt-icon">❯</span>
+        <textarea id="prompt-input" placeholder="Type a command or ask a question..." rows="1" autofocus></textarea>
+      </div>
+    </div> <!-- End input-container -->
+    </main> <!-- End Main Content -->
+
+    <!-- History Sidebar (Right Side) -->
+    <div id="history-sidebar" class="sidebar right hidden">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Sessions</span>
+      </div>
+      <div class="sidebar-content">
+        <ul class="projects-list" id="history-list">
+          <!-- Chat sessions map here -->
+        </ul>
+      </div>
+      <div class="sidebar-footer">
+        <span class="sidebar-hint">⌘J to toggle</span>
+      </div>
+    </div>
+
+  </div> <!-- End Layout -->
+  <!-- Dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+  <!-- KaTeX -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
+  <!-- Mermaid -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+    });
+  </script>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
