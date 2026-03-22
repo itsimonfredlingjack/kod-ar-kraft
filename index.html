@@ -30,10 +30,54 @@
       </div>
       <div class="settings-content">
         <div class="settings-field">
-          <label for="model-select">AI Model</label>
-          <select id="model-select" class="settings-input">
-            <option value="qwen3.5:4b">Loading models...</option>
+          <label for="api-mode-select">API Mode</label>
+          <select id="api-mode-select" class="settings-input">
+            <option value="ollama-native">Ollama Native</option>
+            <option value="openai-compatible">OpenAI Compatible</option>
           </select>
+        </div>
+        <div class="settings-field">
+          <label for="base-url-input">Base URL</label>
+          <input
+            id="base-url-input"
+            class="settings-input"
+            type="text"
+            placeholder="http://127.0.0.1:11434"
+            spellcheck="false"
+            autocomplete="off"
+          >
+        </div>
+        <div class="settings-field">
+          <label for="api-key-input">API Key (optional)</label>
+          <input
+            id="api-key-input"
+            class="settings-input"
+            type="password"
+            placeholder="Leave blank for local or unauthenticated servers"
+            spellcheck="false"
+            autocomplete="off"
+          >
+        </div>
+        <div class="settings-field">
+          <label for="model-input">AI Model</label>
+          <input
+            id="model-input"
+            class="settings-input"
+            type="text"
+            placeholder="qwen-coder"
+            spellcheck="false"
+            autocomplete="off"
+          >
+        </div>
+        <div class="settings-field settings-toggle-field">
+          <div class="settings-toggle-copy">
+            <label for="agent-tools-toggle">Agent Tools</label>
+            <p>Enable workspace-scoped tool calling with approval-only file writes.</p>
+          </div>
+          <label class="settings-toggle" for="agent-tools-toggle">
+            <input id="agent-tools-toggle" type="checkbox">
+            <span class="settings-toggle-track" aria-hidden="true"></span>
+          </label>
         </div>
         <div class="settings-field">
           <label for="temp-slider">Temperature: <span id="temp-val">0.7</span></label>
@@ -79,11 +123,32 @@
   <div class="titlebar-drag-region">
     <div class="hud-status">
       <span class="status-dot"></span>
-      <span id="status-text">Local model standing by</span>
+      <span id="status-text">Model standing by</span>
     </div>
   </div>
 
   <main id="app-layout" class="app-layout" role="main" data-empty="true">
+    <aside id="workspace-sidebar" class="side-panel left hidden" aria-label="Workspace panel">
+      <div class="side-panel-header">
+        <span class="side-panel-title">Workspaces</span>
+        <button id="add-workspace-btn" class="side-panel-action" type="button" aria-label="Choose workspace">+</button>
+      </div>
+      <div class="side-panel-body">
+        <ul id="workspace-sidebar-list" class="side-panel-list"></ul>
+      </div>
+      <div class="side-panel-footer">⌘B to toggle</div>
+    </aside>
+
+    <aside id="sessions-sidebar" class="side-panel right hidden" aria-label="Sessions panel">
+      <div class="side-panel-header">
+        <span class="side-panel-title">Sessions</span>
+      </div>
+      <div class="side-panel-body">
+        <ul id="sessions-sidebar-list" class="side-panel-list"></ul>
+      </div>
+      <div class="side-panel-footer">⌘J to toggle</div>
+    </aside>
+
     <section id="launch-state" class="launch-state">
       <p class="launch-kicker">Warp-Chat</p>
       <h1 class="launch-title">KOD ÄR KRAFT</h1>
