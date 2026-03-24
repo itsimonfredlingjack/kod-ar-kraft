@@ -352,6 +352,9 @@ button {
 }
 
 .message-user-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   max-width: min(76%, 720px);
   padding: 14px 18px;
   border-radius: 18px 18px 8px 18px;
@@ -362,6 +365,31 @@ button {
   font-size: 15px;
   box-shadow: 0 14px 34px rgba(8, 10, 18, 0.18);
   word-break: break-word;
+}
+
+.message-user-text {
+  white-space: pre-wrap;
+}
+
+.message-user-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.message-user-image {
+  display: block;
+  width: min(280px, 100%);
+  max-height: 240px;
+  border-radius: 14px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 28px rgba(8, 10, 18, 0.22);
+}
+
+.message-user-attachment-label {
+  font-size: 12px;
+  color: rgba(208, 211, 225, 0.72);
 }
 
 .message-surface {
@@ -409,6 +437,10 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.message-model.thinking-active {
+  animation: thinking-pulse 1.8s ease-in-out infinite;
 }
 
 .message-actions {
@@ -594,6 +626,14 @@ button {
   white-space: pre;
 }
 
+.approval-command {
+  color: var(--accent-color);
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .approval-approve {
   background: rgba(92, 162, 123, 0.18);
   border-color: rgba(92, 162, 123, 0.32);
@@ -622,6 +662,80 @@ button {
   background: var(--accent-color);
   opacity: 0.82;
   border-radius: 2px;
+}
+
+.thinking-block {
+  margin-bottom: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.thinking-summary {
+  padding: 9px 14px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.thinking-summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-summary::before {
+  content: "▸ ";
+  display: inline;
+  font-size: 0.7rem;
+}
+
+details[open].thinking-block > .thinking-summary::before {
+  content: "▾ ";
+}
+
+.thinking-active .thinking-summary {
+  animation: thinking-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.thinking-content {
+  padding: 6px 14px 12px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.55;
+  border-top: 1px solid var(--border-color);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.thinking-indicator {
+  margin-bottom: 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.thinking-indicator .thinking-dots::after {
+  content: "";
+  animation: thinking-dots 1.4s steps(3, end) infinite;
+}
+
+@keyframes thinking-dots {
+  0% { content: ""; }
+  33% { content: "."; }
+  66% { content: ".."; }
+  100% { content: "..."; }
+}
+
+.thinking-indicator.thinking-active .thinking-dots {
+  animation: thinking-pulse 1.8s ease-in-out infinite;
 }
 
 .input-container {
@@ -681,6 +795,11 @@ button {
   font-size: 12px;
 }
 
+.toolbar-pill.has-attachment {
+  border-color: rgba(141, 211, 255, 0.24);
+  background: rgba(141, 211, 255, 0.1);
+}
+
 .token-counter {
   color: rgba(201, 204, 220, 0.54);
   font-family: var(--font-mono);
@@ -721,6 +840,71 @@ button {
 .input-wrapper:focus-within {
   border-color: var(--accent-border);
   background: linear-gradient(180deg, rgba(31, 35, 48, 0.8), rgba(26, 29, 40, 0.84));
+}
+
+.attachment-preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.attachment-preview-list.hidden {
+  display: none;
+}
+
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(141, 211, 255, 0.18);
+  background: linear-gradient(180deg, rgba(28, 31, 44, 0.74), rgba(18, 21, 31, 0.68));
+  box-shadow: 0 14px 30px rgba(8, 10, 18, 0.2);
+}
+
+.attachment-thumb {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.attachment-meta {
+  min-width: 0;
+}
+
+.attachment-name {
+  display: block;
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.attachment-detail {
+  display: block;
+  margin-top: 2px;
+  color: rgba(201, 204, 220, 0.62);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.attachment-remove {
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 122, 122, 0.24);
+  color: rgba(255, 216, 216, 0.9);
+  background: rgba(114, 44, 44, 0.28);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.attachment-remove:hover {
+  border-color: rgba(255, 122, 122, 0.36);
+  background: rgba(114, 44, 44, 0.4);
 }
 
 .prompt-icon {
@@ -1124,5 +1308,9 @@ button {
 
   .message-user-content {
     max-width: 88%;
+  }
+
+  .attachment-chip {
+    width: 100%;
   }
 }

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Warp-Chat MVP</title>
   <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/tokyo-night-dark.min.css">
+  <link rel="stylesheet" href="vendor/tokyo-night-dark.min.css">
 </head>
 <body>
   <div id="cmd-palette-overlay" class="cmd-palette-overlay hidden">
@@ -72,7 +72,7 @@
         <div class="settings-field settings-toggle-field">
           <div class="settings-toggle-copy">
             <label for="agent-tools-toggle">Agent Tools</label>
-            <p>Enable workspace-scoped tool calling with approval-only file writes.</p>
+            <p>Enable workspace-scoped tool calling with approval-gated edits and commands.</p>
           </div>
           <label class="settings-toggle" for="agent-tools-toggle">
             <input id="agent-tools-toggle" type="checkbox">
@@ -168,7 +168,11 @@
           </button>
           <button id="model-pill" class="toolbar-pill" type="button" title="Open model controls">
             <span class="toolbar-pill-label">Model</span>
-            <span id="active-model-name" class="toolbar-pill-value">qwen3.5:4b</span>
+            <span id="active-model-name" class="toolbar-pill-value">qwen3.5:9b</span>
+          </button>
+          <button id="attach-image-btn" class="toolbar-pill" type="button" title="Attach an image">
+            <span class="toolbar-pill-label">Image</span>
+            <span id="attachment-pill-value" class="toolbar-pill-value">None</span>
           </button>
         </div>
         <div class="toolbar-group toolbar-group-right">
@@ -176,6 +180,8 @@
           <span id="token-counter" class="token-counter">0 / 8,192 ctx</span>
         </div>
       </div>
+
+      <div id="attachment-preview-list" class="attachment-preview-list hidden" aria-live="polite"></div>
 
       <div class="input-wrapper">
         <span class="prompt-icon">›</span>
@@ -189,18 +195,16 @@
     </div>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
-  <script>
-    document.addEventListener("DOMContentLoaded", () => {
-      mermaid.initialize({ startOnLoad: false, theme: "dark" });
-    });
-  </script>
+  <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+
+  <!-- Core rendering deps — loaded locally for offline reliability -->
+  <script src="vendor/marked.umd.js"></script>
+  <script src="vendor/purify.min.js"></script>
+  <script src="vendor/highlight.min.js"></script>
+  <link rel="stylesheet" href="vendor/katex.min.css">
+  <script defer src="vendor/katex.min.js"></script>
+  <script defer src="vendor/katex-auto-render.min.js"></script>
+  <!-- Mermaid is NOT loaded in the host page. It runs only inside sandboxed iframes. -->
   <script src="renderer.js"></script>
 </body>
 </html>
