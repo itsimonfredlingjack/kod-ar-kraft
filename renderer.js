@@ -3257,6 +3257,16 @@ function createUserApiHistoryEntry(text, attachments = []) {
 function createToolTranscriptSummary(toolName, args, result) {
   const pathHint = args?.relativePath ? ` \`${args.relativePath}\`` : "";
 
+  if (toolName === "run_command" && result?.success === false) {
+    const cmdSnippet = (args?.command || result?.command || "").slice(0, 60);
+    if (result.error) {
+      return cmdSnippet
+        ? `Command \`${cmdSnippet}\` failed: ${result.error}`
+        : result.error;
+    }
+    return cmdSnippet ? `Command \`${cmdSnippet}\` failed.` : "`run_command` failed.";
+  }
+
   if (result?.success === false) {
     return `\`${toolName}\`${pathHint} failed.`;
   }
@@ -3422,7 +3432,7 @@ async function executeToolCalls(toolCalls) {
       const errorResult = {
         success: false,
         toolName,
-        error: "A pending file change must be approved or rejected before more tools can continue."
+        error: "A pending change or command must be approved or rejected before more tools can continue."
       };
       updateTranscriptItem(transcriptItem.id, {
         title: "Tool Result",
@@ -3467,7 +3477,9 @@ async function executeToolCalls(toolCalls) {
         const skippedError = {
           success: false,
           toolName: skippedName,
-          error: "Skipped because a file change proposal requires approval first."
+          error: isCommand
+            ? "Skipped because a command approval requires action first."
+            : "Skipped because a file change proposal requires approval first."
         };
         addTranscriptItem("tool", {
           title: "Tool Result",
@@ -3667,7 +3679,7 @@ async function resolvePendingChange(decision) {
       error: "The approval flow returned no result."
     };
 
-    if (decision === "approve" && toolResult.success === false) {
+    if (decision === "approve" && toolResult.success === false && toolResult.retryable === true) {
       updateTranscriptItem(pendingChange.id, {
         status: "pending"
       });
@@ -3884,7 +3896,7 @@ async function sendMessage(text) {
   }
 
   if (state.pendingAgentChange) {
-    showToast("Resolve the pending file change before sending another message");
+    showToast("Resolve the pending approval before sending another message");
     return;
   }
 

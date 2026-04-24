@@ -3,7 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
-const { execFile } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
@@ -703,7 +703,7 @@ const PINNED_PATHS = {
   find: '/usr/bin/find',
   echo: '/bin/echo',
   git: '/usr/bin/git'
-  // npm, node, python, pip, cargo: resolved via PATH (install paths vary)
+  // npm, node, python, pip: resolved via PATH (install paths vary)
 };
 
 const resolvedBinaryPaths = new Map();
@@ -734,12 +734,11 @@ const SAFE_COMMANDS = new Map([
   ['echo',    { subcommands: null, forbiddenFlags: new Set() }],
   ['git',     { subcommands: new Set(['status', 'diff', 'log', 'branch', 'show', 'rev-parse', 'remote']), forbiddenFlags: new Set() }],
   ['npm',     { subcommands: new Set(['ls', 'outdated', 'list']), forbiddenFlags: new Set() }],
-  ['node',    { subcommands: null, forbiddenFlags: new Set(), argsAllowlist: new Set(['--version', '-v', '-e']) }],
+  ['node',    { subcommands: null, forbiddenFlags: new Set(), argsAllowlist: new Set(['--version', '-v']) }],
   ['python',  { subcommands: null, forbiddenFlags: new Set(), argsAllowlist: new Set(['--version', '-V']) }],
   ['python3', { subcommands: null, forbiddenFlags: new Set(), argsAllowlist: new Set(['--version', '-V']) }],
   ['pip',     { subcommands: new Set(['list', 'show', 'freeze']), forbiddenFlags: new Set() }],
   ['pip3',    { subcommands: new Set(['list', 'show', 'freeze']), forbiddenFlags: new Set() }],
-  ['cargo',   { subcommands: new Set(['check', 'test', 'clippy']), forbiddenFlags: new Set() }],
 ]);
 
 // Characters that indicate shell interpretation beyond simple argv splitting.
@@ -835,11 +834,138 @@ function isCommandSafe(command, workspaceRoot) {
 }
 
 const MAX_COMMAND_OUTPUT = 64 * 1024;
+const COMMAND_TIMEOUT_MS = 30_000;
+const COMMAND_OUTPUT_TRUNCATED_MARKER = '\n... output truncated ...';
 
-function truncateOutput(text, max = MAX_COMMAND_OUTPUT) {
-  if (typeof text !== 'string') return '';
-  if (text.length <= max) return text;
-  return text.slice(0, max) + '\n... output truncated ...';
+function createOutputCollector(limit = MAX_COMMAND_OUTPUT) {
+  const chunks = [];
+  let size = 0;
+  let truncated = false;
+
+  return {
+    append(chunk) {
+      if (chunk == null || truncated) return;
+
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      const remaining = limit - size;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+
+      const slice = buffer.subarray(0, remaining);
+      if (slice.length > 0) {
+        chunks.push(slice);
+        size += slice.length;
+      }
+
+      if (buffer.length > remaining) {
+        truncated = true;
+      }
+    },
+    toString() {
+      const text = Buffer.concat(chunks).toString('utf8');
+      return truncated ? text + COMMAND_OUTPUT_TRUNCATED_MARKER : text;
+    }
+  };
+}
+
+function getCommandExecutionSpec(command) {
+  const argv = parseSimpleArgv(command);
+  if (argv && argv.length > 0) {
+    return {
+      executionMode: 'direct',
+      file: resolveBinary(argv[0]),
+      args: argv.slice(1)
+    };
+  }
+
+  return {
+    executionMode: 'shell',
+    file: '/bin/sh',
+    args: ['-c', command]
+  };
+}
+
+async function executeCommand({ file, args = [], cwd }) {
+  return new Promise((resolve) => {
+    const stdout = createOutputCollector();
+    const stderr = createOutputCollector();
+    let settled = false;
+    let timedOut = false;
+    let killTimer = null;
+
+    const finalize = (result) => {
+      if (settled) return;
+      settled = true;
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+      resolve({
+        ...result,
+        stdout: stdout.toString(),
+        stderr: stderr.toString()
+      });
+    };
+
+    let child;
+    try {
+      child = spawn(file, args, {
+        cwd,
+        env: { ...process.env, PATH: process.env.PATH },
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+    } catch (error) {
+      finalize({
+        success: false,
+        error: error.message || 'Failed to start command.',
+        code: error.code || 'COMMAND_SPAWN_FAILED',
+        exitCode: null
+      });
+      return;
+    }
+
+    child.stdout?.on('data', (chunk) => stdout.append(chunk));
+    child.stderr?.on('data', (chunk) => stderr.append(chunk));
+
+    child.on('error', (error) => {
+      finalize({
+        success: false,
+        error: error.message || 'Failed to start command.',
+        code: error.code || 'COMMAND_SPAWN_FAILED',
+        exitCode: null
+      });
+    });
+
+    child.on('close', (code, signal) => {
+      if (timedOut) {
+        finalize({
+          success: false,
+          error: `Command timed out after ${COMMAND_TIMEOUT_MS / 1000} seconds.`,
+          code: 'COMMAND_TIMED_OUT',
+          exitCode: code ?? 124,
+          signal
+        });
+        return;
+      }
+
+      finalize({
+        success: true,
+        exitCode: code ?? 1,
+        signal
+      });
+    });
+
+    killTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        if (!settled) {
+          child.kill('SIGKILL');
+        }
+      }, 2000).unref();
+    }, COMMAND_TIMEOUT_MS);
+  });
 }
 
 async function runCommandTool(args, workspaceRoot) {
@@ -860,46 +986,19 @@ async function runCommandTool(args, workspaceRoot) {
     // Safe commands: execute directly without shell interpretation.
     // parseSimpleArgv already validated and split the command.
     // Binary is resolved to a pinned absolute path where available.
-    const argv = parseSimpleArgv(command);
-    const binary = resolveBinary(argv[0]);
-    const args = argv.slice(1);
-    try {
-      const { stdout, stderr } = await execFileAsync(binary, args, {
-        cwd: cwdPath,
-        timeout: 30000,
-        maxBuffer: MAX_COMMAND_OUTPUT * 2,
-        env: { ...process.env, PATH: process.env.PATH }
-      });
-      return {
-        success: true,
-        toolName: 'run_command',
-        command,
-        executionMode: 'direct',
-        exitCode: 0,
-        stdout: truncateOutput(stdout),
-        stderr: truncateOutput(stderr)
-      };
-    } catch (error) {
-      if (error.killed) {
-        return {
-          success: false,
-          toolName: 'run_command',
-          command,
-          error: 'Command timed out after 30 seconds.',
-          stdout: truncateOutput(error.stdout),
-          stderr: truncateOutput(error.stderr)
-        };
-      }
-      return {
-        success: true,
-        toolName: 'run_command',
-        command,
-        executionMode: 'direct',
-        exitCode: error.code ?? 1,
-        stdout: truncateOutput(error.stdout),
-        stderr: truncateOutput(error.stderr)
-      };
-    }
+    const execution = getCommandExecutionSpec(command);
+    const result = await executeCommand({
+      file: execution.file,
+      args: execution.args,
+      cwd: cwdPath
+    });
+
+    return {
+      ...result,
+      toolName: 'run_command',
+      command,
+      executionMode: execution.executionMode
+    };
   }
 
   // Reject commands that are too complex to safely approve
@@ -911,8 +1010,7 @@ async function runCommandTool(args, workspaceRoot) {
   }
 
   // Determine whether the command can be executed directly or requires shell
-  const approvalArgv = parseSimpleArgv(command);
-  const approvalExecMode = approvalArgv && approvalArgv.length > 0 ? 'direct' : 'shell';
+  const approvalExecution = getCommandExecutionSpec(command);
 
   const pendingChange = {
     id: crypto.randomUUID(),
@@ -922,7 +1020,7 @@ async function runCommandTool(args, workspaceRoot) {
     workspaceRoot: rootRealPath,
     command,
     cwd: cwdPath,
-    executionMode: approvalExecMode,
+    executionMode: approvalExecution.executionMode,
     status: 'pending'
   };
 
@@ -1050,7 +1148,7 @@ async function resolvePendingAgentChange(payload = {}) {
       toolResult: {
         success: false,
         toolName: pendingChange?.toolName || 'propose_file_write',
-        error: 'The pending file change could not be found. It may have expired after an app restart.',
+        error: 'The pending approval could not be found. It may have expired after an app restart.',
         code: 'PENDING_CHANGE_MISSING'
       }
     };
@@ -1058,52 +1156,26 @@ async function resolvePendingAgentChange(payload = {}) {
 
   if (decision === 'approve') {
     if (pendingChange.kind === 'command') {
-      // Attempt direct execution (no shell) if the command can be parsed into argv.
-      // Fall back to shell only for commands with shell-specific syntax (pipes, etc.).
-      const argv = parseSimpleArgv(pendingChange.command);
-      const useDirectExec = argv && argv.length > 0;
-      const execArgs = useDirectExec
-        ? [resolveBinary(argv[0]), argv.slice(1)]
-        : ['/bin/sh', ['-c', pendingChange.command]];
-      const executionMode = useDirectExec ? 'direct' : 'shell';
+      const execution = getCommandExecutionSpec(pendingChange.command);
+      const result = await executeCommand({
+        file: execution.file,
+        args: execution.args,
+        cwd: pendingChange.cwd
+      });
+      pendingAgentChanges.delete(changeId);
 
-      try {
-        const { stdout, stderr } = await execFileAsync(execArgs[0], execArgs[1], {
-          cwd: pendingChange.cwd,
-          timeout: 30000,
-          maxBuffer: MAX_COMMAND_OUTPUT * 2,
-          env: { ...process.env, PATH: process.env.PATH }
-        });
-        pendingAgentChanges.delete(changeId);
-        return {
-          toolResult: {
-            success: true,
-            toolName: pendingChange.toolName || 'run_command',
-            decision: 'approved',
-            executionMode,
-            command: pendingChange.command,
-            exitCode: 0,
-            stdout: truncateOutput(stdout),
-            stderr: truncateOutput(stderr),
-            message: `Executed (${executionMode}): ${pendingChange.command}`
-          }
-        };
-      } catch (error) {
-        pendingAgentChanges.delete(changeId);
-        return {
-          toolResult: {
-            success: true,
-            toolName: pendingChange.toolName || 'run_command',
-            decision: 'approved',
-            executionMode,
-            command: pendingChange.command,
-            exitCode: error.code ?? 1,
-            stdout: truncateOutput(error.stdout),
-            stderr: truncateOutput(error.stderr),
-            message: `Command exited with code ${error.code ?? 1} (${executionMode}).`
-          }
-        };
-      }
+      return {
+        toolResult: {
+          ...result,
+          toolName: pendingChange.toolName || 'run_command',
+          decision: 'approved',
+          executionMode: execution.executionMode,
+          command: pendingChange.command,
+          message: result.success
+            ? `Executed (${execution.executionMode}): ${pendingChange.command}`
+            : result.error || `Command exited with code ${result.exitCode ?? 1} (${execution.executionMode}).`
+        }
+      };
     }
 
     // File write/edit
@@ -1120,7 +1192,8 @@ async function resolvePendingAgentChange(payload = {}) {
           relativePath: pendingChange.relativePath,
           changeType: pendingChange.changeType,
           error: error.message || `Failed to apply ${pendingChange.relativePath}.`,
-          code: 'LOCAL_APPLY_FAILED'
+          code: 'LOCAL_APPLY_FAILED',
+          retryable: true
         }
       };
     }
