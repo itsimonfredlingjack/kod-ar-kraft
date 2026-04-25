@@ -36,6 +36,7 @@ const imageInput = document.getElementById("image-input");
 const tokenCounter = document.getElementById("token-counter");
 const stopBtn = document.getElementById("stop-btn");
 const statusText = document.getElementById("status-text");
+const titlebarDragRegion = document.querySelector(".titlebar-drag-region");
 
 const cmdOverlay = document.getElementById("cmd-palette-overlay");
 const cmdInput = document.getElementById("cmd-input");
@@ -60,6 +61,10 @@ const systemModalOverlay = document.getElementById("system-modal-overlay");
 const systemInput = document.getElementById("system-input");
 const systemCloseBtn = document.getElementById("system-close-btn");
 const systemSaveBtn = document.getElementById("system-save-btn");
+
+const modalBackgroundElements = [appLayout, titlebarDragRegion].filter(Boolean);
+const overlayRestoreTargets = new WeakMap();
+let activeDialogOverlay = null;
 
 const DEFAULT_API_MODE = "ollama-native";
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
@@ -1336,6 +1341,10 @@ function showToast(message) {
 
   const toast = document.createElement("div");
   toast.className = "toast";
+  const isAlert = /\b(error|failed|unable|warning|too large|unsupported|unknown)\b/i.test(message);
+  toast.setAttribute("role", isAlert ? "alert" : "status");
+  toast.setAttribute("aria-live", isAlert ? "assertive" : "polite");
+  toast.setAttribute("aria-atomic", "true");
   toast.textContent = message;
   document.body.appendChild(toast);
 
@@ -2975,6 +2984,82 @@ function updatePanelLayoutState() {
   appLayout.classList.toggle("sessions-panel-open", !workspaceOpen && sessionsOpen);
 }
 
+function setModalBackgroundState(isModal) {
+  modalBackgroundElements.forEach((element) => {
+    element.inert = isModal;
+    if (isModal) {
+      element.setAttribute("aria-hidden", "true");
+    } else {
+      element.removeAttribute("aria-hidden");
+    }
+  });
+}
+
+function getFocusableElements(root) {
+  if (!root) return [];
+  const selector = [
+    "button:not([disabled])",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "a[href]",
+    '[tabindex]:not([tabindex="-1"])'
+  ].join(",");
+
+  return Array.from(root.querySelectorAll(selector)).filter((element) => {
+    return element.offsetParent !== null || element.getClientRects().length > 0;
+  });
+}
+
+function openOverlay(overlay, focusTarget, { restoreFocusTarget = document.activeElement } = {}) {
+  if (!overlay) return;
+  const fallbackFocus = promptInput;
+  const restoreTarget = restoreFocusTarget instanceof HTMLElement ? restoreFocusTarget : fallbackFocus;
+
+  overlayRestoreTargets.set(overlay, restoreTarget);
+  activeDialogOverlay = overlay;
+  overlay.classList.remove("hidden");
+  focusTarget?.focus();
+  setModalBackgroundState(true);
+}
+
+function closeOverlay(overlay, { restoreFocus = true } = {}) {
+  if (!overlay) return;
+  overlay.classList.add("hidden");
+
+  if (activeDialogOverlay === overlay) {
+    activeDialogOverlay = null;
+  }
+  setModalBackgroundState(false);
+
+  const restoreFocusTarget = overlayRestoreTargets.get(overlay);
+  overlayRestoreTargets.delete(overlay);
+  if (restoreFocus) {
+    const target = restoreFocusTarget?.isConnected ? restoreFocusTarget : promptInput;
+    target?.focus();
+  }
+}
+
+function trapOverlayFocus(event) {
+  if (event.key !== "Tab" || !activeDialogOverlay || activeDialogOverlay.classList.contains("hidden")) return;
+
+  const focusableElements = getFocusableElements(activeDialogOverlay);
+  if (focusableElements.length === 0) {
+    event.preventDefault();
+    return;
+  }
+
+  const first = focusableElements[0];
+  const last = focusableElements[focusableElements.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function clearConversation({ silent = false } = {}) {
   cancelActiveGeneration();
   state.apiHistory = [];
@@ -3138,14 +3223,23 @@ function updatePaletteSelection() {
   // Update .selected class without rebuilding the DOM — preserves click targets.
   const buttons = cmdResults.querySelectorAll(".cmd-item");
   buttons.forEach((btn, i) => {
-    btn.classList.toggle("selected", i === state.selectedPaletteIndex);
+    const isSelected = i === state.selectedPaletteIndex;
+    btn.classList.toggle("selected", isSelected);
+    btn.setAttribute("aria-selected", String(isSelected));
   });
+  const selectedButton = buttons[state.selectedPaletteIndex];
+  if (selectedButton) {
+    cmdInput.setAttribute("aria-activedescendant", selectedButton.id);
+  } else {
+    cmdInput.removeAttribute("aria-activedescendant");
+  }
 }
 
 function renderPaletteList() {
   const items = filteredPaletteItems();
   if (items.length === 0) {
     cmdResults.innerHTML = '<div class="cmd-empty">No matching controls.</div>';
+    cmdInput.removeAttribute("aria-activedescendant");
     return;
   }
 
@@ -3155,8 +3249,11 @@ function renderPaletteList() {
   items.forEach((item, index) => {
     const button = document.createElement("button");
     button.type = "button";
+    button.id = `cmd-item-${state.paletteMode}-${index}`;
     button.className = `cmd-item${index === state.selectedPaletteIndex ? " selected" : ""}`;
     button.disabled = Boolean(item.disabled);
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(index === state.selectedPaletteIndex));
 
     const main = document.createElement("div");
     main.className = "cmd-item-main";
@@ -3189,6 +3286,7 @@ function renderPaletteList() {
 
     cmdResults.appendChild(button);
   });
+  updatePaletteSelection();
 }
 
 async function renderPalette(mode = state.paletteMode) {
@@ -3202,20 +3300,26 @@ async function renderPalette(mode = state.paletteMode) {
 
 async function openCmdPalette(mode = "root") {
   state.isCmdPaletteOpen = true;
-  cmdOverlay.classList.remove("hidden");
   cmdInput.value = "";
+  cmdInput.setAttribute("aria-expanded", "true");
   await renderPalette(mode);
-  cmdInput.focus();
+  openOverlay(cmdOverlay, cmdInput);
 }
 
-function closeCmdPalette() {
+function closeCmdPalette(options = {}) {
+  const wasOpen = state.isCmdPaletteOpen || !cmdOverlay.classList.contains("hidden");
   state.isCmdPaletteOpen = false;
-  cmdOverlay.classList.add("hidden");
-  promptInput.focus();
+  cmdInput.setAttribute("aria-expanded", "false");
+  cmdInput.removeAttribute("aria-activedescendant");
+  if (wasOpen) {
+    closeOverlay(cmdOverlay, options);
+  } else {
+    cmdOverlay.classList.add("hidden");
+  }
 }
 
 function openSettingsModal() {
-  settingsModalOverlay.classList.remove("hidden");
+  if (state.isCmdPaletteOpen) closeCmdPalette({ restoreFocus: false });
   apiModeSelect.value = state.currentApiMode;
   baseUrlInput.value = state.currentBaseUrl;
   apiKeyInput.value = state.currentApiKey;
@@ -3225,24 +3329,22 @@ function openSettingsModal() {
   tempVal.textContent = state.currentTemperature;
   ctxSlider.value = state.currentContextWindow;
   ctxVal.textContent = state.currentContextWindow;
-  modelInput.focus();
+  openOverlay(settingsModalOverlay, modelInput);
   modelInput.select();
 }
 
-function closeSettingsModal() {
-  settingsModalOverlay.classList.add("hidden");
-  promptInput.focus();
+function closeSettingsModal(options = {}) {
+  closeOverlay(settingsModalOverlay, options);
 }
 
 function openSystemModal() {
-  systemModalOverlay.classList.remove("hidden");
+  if (state.isCmdPaletteOpen) closeCmdPalette({ restoreFocus: false });
   systemInput.value = state.currentSystemPrompt;
-  systemInput.focus();
+  openOverlay(systemModalOverlay, systemInput);
 }
 
-function closeSystemModal() {
-  systemModalOverlay.classList.add("hidden");
-  promptInput.focus();
+function closeSystemModal(options = {}) {
+  closeOverlay(systemModalOverlay, options);
 }
 
 async function setWorkspace(targetPath) {
@@ -3256,7 +3358,7 @@ async function setWorkspace(targetPath) {
 }
 
 async function chooseWorkspace() {
-  closeCmdPalette();
+  closeCmdPalette({ restoreFocus: false });
   const folderPath = await window.electronAPI?.selectFolder?.();
   if (folderPath) await setWorkspace(folderPath);
 }
@@ -3345,12 +3447,12 @@ async function executePaletteItem(item) {
   if (item.action === "open-workspaces") return renderPalette("workspaces");
   if (item.action === "open-sessions") return renderPalette("sessions");
   if (item.action === "open-system") {
-    closeCmdPalette();
+    closeCmdPalette({ restoreFocus: false });
     openSystemModal();
     return;
   }
   if (item.action === "open-settings") {
-    closeCmdPalette();
+    closeCmdPalette({ restoreFocus: false });
     openSettingsModal();
     return;
   }
@@ -3377,19 +3479,19 @@ async function executePaletteItem(item) {
     return;
   }
   if (item.action === "export") {
-    closeCmdPalette();
+    closeCmdPalette({ restoreFocus: false });
     await exportChat();
     return;
   }
   if (item.action === "clear") {
-    closeCmdPalette();
+    closeCmdPalette({ restoreFocus: false });
     clearConversation();
     return;
   }
   if (item.action === "toggle-sound") {
     state.isAudioMuted = !state.isAudioMuted;
     localStorage.setItem("warp_chat_muted", String(state.isAudioMuted));
-    closeCmdPalette();
+    closeCmdPalette({ restoreFocus: false });
     showToast(state.isAudioMuted ? "Sounds off" : "Sounds on");
     if (!state.isAudioMuted) playClick();
   }
@@ -4423,6 +4525,9 @@ systemSaveBtn.addEventListener("click", () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  trapOverlayFocus(event);
+  if (event.defaultPrevented) return;
+
   if (event.metaKey && event.key.toLowerCase() === "k") {
     event.preventDefault();
     if (state.isCmdPaletteOpen) closeCmdPalette();
@@ -4496,8 +4601,9 @@ document.addEventListener("keydown", (event) => {
     !event.metaKey &&
     !event.ctrlKey &&
     !event.altKey &&
-    event.key.length === 1
+    event.key === "/"
   ) {
+    event.preventDefault();
     promptInput.focus();
   }
 });

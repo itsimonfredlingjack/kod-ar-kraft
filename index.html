@@ -13,13 +13,21 @@
       <div class="cmd-input-wrapper">
         <button id="cmd-back-btn" class="cmd-back hidden" type="button" aria-label="Back to main controls">Back</button>
         <span class="cmd-icon">⌘</span>
-        <input type="text" id="cmd-input" placeholder="Search controls..." autocomplete="off">
+        <input
+          type="text"
+          id="cmd-input"
+          placeholder="Search controls..."
+          autocomplete="off"
+          aria-label="Search commands"
+          aria-controls="cmd-results"
+          aria-expanded="false"
+        >
       </div>
       <div class="cmd-meta">
         <span id="cmd-mode-label">Controls</span>
         <span class="cmd-meta-hint">↑↓ select · ↵ confirm · esc close</span>
       </div>
-      <div class="cmd-results" id="cmd-results"></div>
+      <div class="cmd-results" id="cmd-results" role="listbox" aria-label="Command results"></div>
     </div>
   </div>
 
@@ -123,7 +131,7 @@
   <div class="titlebar-drag-region">
     <div class="hud-status">
       <span class="status-dot"></span>
-      <span id="status-text">Agent standing by</span>
+      <span id="status-text" role="status" aria-live="polite" aria-atomic="true">Agent standing by</span>
     </div>
   </div>
 
@@ -196,6 +204,7 @@
         <textarea
           id="prompt-input"
           placeholder="Tell the agent what to do..."
+          aria-label="Message"
           rows="1"
           autofocus
         ></textarea>

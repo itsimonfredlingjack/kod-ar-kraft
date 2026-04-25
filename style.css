@@ -5,6 +5,7 @@
   --text-muted: rgba(195, 198, 214, 0.7);
   --text-soft: rgba(227, 230, 240, 0.84);
   --border-color: rgba(255, 255, 255, 0.08);
+  --border-ui: rgba(255, 255, 255, 0.34);
   --border-strong: rgba(255, 255, 255, 0.14);
   --surface: rgba(20, 24, 32, 0.58);
   --surface-strong: rgba(24, 29, 38, 0.78);
@@ -18,6 +19,7 @@
   --accent-hover: #78aaff;
   --accent-soft: rgba(94, 155, 255, 0.16);
   --accent-border: rgba(94, 155, 255, 0.38);
+  --accent-border-strong: rgba(94, 155, 255, 0.68);
   --aurora-violet: rgba(126, 88, 255, 0.18);
   --aurora-blue: rgba(94, 155, 255, 0.24);
   --aurora-cyan: rgba(61, 220, 210, 0.1);
@@ -956,7 +958,7 @@ details[open].thinking-block > .thinking-summary::before {
 }
 
 .toolbar-pill.has-attachment {
-  border-color: var(--accent-border);
+  border-color: var(--accent-border-strong);
   background: var(--accent-soft);
 }
 
@@ -1002,7 +1004,7 @@ details[open].thinking-block > .thinking-summary::before {
 }
 
 .input-wrapper:focus-within {
-  border-color: var(--accent-border);
+  border-color: var(--accent-border-strong);
   background:
     radial-gradient(ellipse at 12% 0%, rgba(94, 155, 255, 0.08), transparent 44%),
     linear-gradient(180deg, var(--surface-glass-strong), rgba(11, 14, 20, 0.96));
@@ -1128,7 +1130,7 @@ details[open].thinking-block > .thinking-summary::before {
   width: min(640px, calc(100% - 48px));
   border-radius: var(--modal-radius);
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-ui);
   background: var(--palette-bg);
   backdrop-filter: blur(24px) saturate(140%);
   box-shadow: 0 28px 60px rgba(4, 6, 12, 0.42);
@@ -1139,7 +1141,7 @@ details[open].thinking-block > .thinking-summary::before {
   align-items: center;
   gap: 12px;
   padding: 18px 20px 16px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-ui);
 }
 
 .cmd-back {
@@ -1172,7 +1174,7 @@ details[open].thinking-block > .thinking-summary::before {
   gap: 12px;
   padding: 12px 20px 10px;
   color: var(--text-muted);
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-ui);
   font-size: 12px;
 }
 
@@ -1194,6 +1196,7 @@ details[open].thinking-block > .thinking-summary::before {
   gap: 14px;
   padding: 14px 14px;
   border-radius: var(--control-radius);
+  border: 1px solid transparent;
   color: var(--text-soft);
   background: transparent;
   cursor: pointer;
@@ -1201,8 +1204,8 @@ details[open].thinking-block > .thinking-summary::before {
 }
 
 .cmd-item.selected {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: var(--border-color);
+  border: 1px solid var(--accent-border-strong);
+  background: rgba(94, 155, 255, 0.2);
 }
 
 .cmd-item-main {
@@ -1241,7 +1244,7 @@ details[open].thinking-block > .thinking-summary::before {
   width: min(460px, calc(100% - 40px));
   border-radius: var(--modal-radius);
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-ui);
   background: var(--palette-bg);
   backdrop-filter: blur(24px) saturate(140%);
   box-shadow: 0 28px 60px rgba(4, 6, 12, 0.42);
@@ -1307,7 +1310,7 @@ details[open].thinking-block > .thinking-summary::before {
   width: 100%;
   padding: 12px 14px;
   border-radius: var(--control-radius);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-ui);
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-main);
   outline: none;
@@ -1353,7 +1356,7 @@ details[open].thinking-block > .thinking-summary::before {
 .settings-slider::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--border-ui);
 }
 
 .settings-slider::-webkit-slider-thumb {
@@ -1379,7 +1382,7 @@ details[open].thinking-block > .thinking-summary::before {
 
 .settings-btn.primary {
   background: var(--accent-soft);
-  border-color: var(--accent-border);
+  border-color: var(--accent-border-strong);
 }
 
 .settings-toggle {
@@ -1401,8 +1404,8 @@ details[open].thinking-block > .thinking-summary::before {
   width: 100%;
   height: 100%;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid var(--border-ui);
   transition: background 140ms ease, border-color 140ms ease;
 }
 
@@ -1421,7 +1424,7 @@ details[open].thinking-block > .thinking-summary::before {
 
 .settings-toggle input:checked + .settings-toggle-track {
   background: var(--accent-soft);
-  border-color: var(--accent-border);
+  border-color: var(--accent-border-strong);
 }
 
 .settings-toggle input:checked + .settings-toggle-track::after {
@@ -1445,8 +1448,22 @@ details[open].thinking-block > .thinking-summary::before {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+
   .mesh-bg {
     animation: none;
+  }
+
+  .thinking-summary,
+  .thinking-indicator .thinking-dots,
+  .thinking-indicator.thinking-active .thinking-dots,
+  .message-agent-step.is-loading .message-role::before {
+    animation: none !important;
   }
 }
 
