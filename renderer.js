@@ -18,6 +18,8 @@ const appLayout = document.getElementById("app-layout");
 const launchCopy = document.getElementById("launch-copy");
 const messagesList = document.getElementById("messages");
 const promptInput = document.getElementById("prompt-input");
+const launchWorkspaceBtn = document.getElementById("launch-workspace-btn");
+const launchPaletteBtn = document.getElementById("launch-palette-btn");
 const workspacePill = document.getElementById("workspace-pill");
 const workspaceSidebar = document.getElementById("workspace-sidebar");
 const workspaceSidebarList = document.getElementById("workspace-sidebar-list");
@@ -187,7 +189,7 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "run_command",
-      description: "Run a shell command in the workspace. Safe read-only commands run immediately. Commands that modify state require user approval.",
+      description: "Run a short terminal command in the selected workspace. Use this for quick inspection or verification. Explain why with reason, expectedOutcome, and riskSummary. Safe read-only commands can run automatically; anything risky requires approval.",
       parameters: {
         type: "object",
         properties: {
@@ -198,9 +200,88 @@ const AGENT_TOOLS = [
           cwd: {
             type: "string",
             description: "Working directory relative to workspace root. Defaults to ."
+          },
+          reason: {
+            type: "string",
+            description: "Plain-language reason for running this command."
+          },
+          expectedOutcome: {
+            type: "string",
+            description: "What useful result you expect to learn from the command."
+          },
+          riskSummary: {
+            type: "string",
+            description: "Plain-language risk. Use 'Read-only inspection' for harmless commands."
           }
         },
         required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "start_terminal_task",
+      description: "Start an approved long-running terminal task in the selected workspace, such as npm run dev. Always explain why with reason, expectedOutcome, and riskSummary. This always pauses for user approval before starting.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description: "The long-running command to start."
+          },
+          cwd: {
+            type: "string",
+            description: "Working directory relative to workspace root. Defaults to ."
+          },
+          reason: {
+            type: "string",
+            description: "Plain-language reason for starting this terminal task."
+          },
+          expectedOutcome: {
+            type: "string",
+            description: "What visible output or running service should confirm it worked."
+          },
+          riskSummary: {
+            type: "string",
+            description: "Plain-language risk, such as opening a local server or running package scripts."
+          }
+        },
+        required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_terminal_task_output",
+      description: "Fetch recent output and status from a terminal task that was started by start_terminal_task.",
+      parameters: {
+        type: "object",
+        properties: {
+          taskId: {
+            type: "string",
+            description: "Terminal task id returned by start_terminal_task."
+          }
+        },
+        required: ["taskId"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "stop_terminal_task",
+      description: "Stop a terminal task that was started by start_terminal_task.",
+      parameters: {
+        type: "object",
+        properties: {
+          taskId: {
+            type: "string",
+            description: "Terminal task id returned by start_terminal_task."
+          }
+        },
+        required: ["taskId"]
       }
     }
   }
@@ -651,11 +732,19 @@ function isAgentModeEnabled() {
   return state.currentAgentToolsEnabled && providerSupportsAgentTools(getProviderConfig());
 }
 
+function isCommandApproval(item) {
+  return item?.kind === "command" || item?.kind === "terminal-task";
+}
+
+function isTerminalTaskActive(status) {
+  return status === "starting" || status === "running" || status === "stopping";
+}
+
 function getIdleStatus(providerConfig = getProviderConfig()) {
   if (state.currentAgentToolsEnabled && providerSupportsAgentTools(providerConfig)) {
     return isNativeOllamaMode(providerConfig)
-      ? "Local workspace agent standing by"
-      : "Remote workspace agent standing by";
+      ? "Local agent standing by"
+      : "Remote agent standing by";
   }
   return providerConfig.mode === "openai-compatible"
     ? "Remote model standing by"
@@ -665,8 +754,8 @@ function getIdleStatus(providerConfig = getProviderConfig()) {
 function getRespondingStatus(providerConfig = getProviderConfig()) {
   if (state.currentAgentToolsEnabled && providerSupportsAgentTools(providerConfig)) {
     return isNativeOllamaMode(providerConfig)
-      ? `${state.currentModel} agent running...`
-      : "Workspace agent running...";
+      ? `${state.currentModel} agent working...`
+      : "Agent working...";
   }
   return providerConfig.mode === "openai-compatible"
     ? "Connecting to remote model..."
@@ -676,8 +765,8 @@ function getRespondingStatus(providerConfig = getProviderConfig()) {
 function getUnavailableStatus(providerConfig = getProviderConfig()) {
   if (state.currentAgentToolsEnabled && providerSupportsAgentTools(providerConfig)) {
     return isNativeOllamaMode(providerConfig)
-      ? "Local workspace agent unavailable"
-      : "Workspace agent unavailable";
+      ? "Local agent unavailable"
+      : "Agent unavailable";
   }
   return providerConfig.mode === "openai-compatible"
     ? "Remote model unavailable"
@@ -1123,8 +1212,8 @@ function updateStatus(message) {
 function setEmptyState(isEmpty) {
   appLayout.dataset.empty = isEmpty ? "true" : "false";
   launchCopy.textContent = isEmpty
-    ? "Ask a question, inspect a file, or iterate on code. Use Cmd+K for model, workspace, and session controls."
-    : "The transcript is active. Use Cmd+K for model, workspace, export, or recent sessions.";
+    ? "Choose a workspace to inspect files, run checks, or ask about code."
+    : "The transcript is active. The agent work trace appears above the prompt.";
 }
 
 function estimateTokens(text) {
@@ -1687,7 +1776,7 @@ function normalizeLegacyTranscript(history = []) {
   }));
 }
 
-const VALID_TRANSCRIPT_TYPES = new Set(["user", "assistant", "error", "tool", "approval", "approval-result"]);
+const VALID_TRANSCRIPT_TYPES = new Set(["user", "assistant", "error", "tool", "approval", "approval-result", "terminal-task"]);
 const VALID_API_ROLES = new Set(["system", "user", "assistant", "tool"]);
 
 function isValidSessionRecord(session) {
@@ -2137,7 +2226,7 @@ function renderAssistantContent(body, text, { showCursor = false } = {}) {
 }
 
 function createTranscriptSurface(item) {
-  const title = item.title || "Tool";
+  const title = item.title || "Agent Step";
   const subtitle = item.subtitle || "";
   const markdown = [item.summary || ""];
 
@@ -2154,12 +2243,13 @@ function createTranscriptSurface(item) {
     isError: item.variant === "error"
   });
 
+  block.classList.add("message-agent-step");
   renderAssistantContent(body, markdown.filter(Boolean).join("\n\n"));
   enhanceRenderedContent(body);
   const rawOutput = markdown.filter(Boolean).join("\n\n");
   block.dataset.rawOutput = rawOutput;
   copyBtn.classList.toggle("hidden", !rawOutput);
-  block.classList.remove("is-loading");
+  if (item.status !== "running") block.classList.remove("is-loading");
   return block;
 }
 
@@ -2241,12 +2331,16 @@ function createApprovalBlock(item) {
 
   const role = document.createElement("span");
   role.className = "message-role";
-  role.textContent = item.kind === "command" ? "Pending Command" : "Pending Change";
+  role.textContent = item.kind === "terminal-task"
+    ? "Pending Terminal Task"
+    : item.kind === "command"
+      ? "Pending Command"
+      : "Pending Change";
 
   const model = document.createElement("span");
   model.className = "message-model";
-  model.textContent = item.kind === "command"
-    ? "run_command"
+  model.textContent = isCommandApproval(item)
+    ? item.toolName || "run_command"
     : `${item.changeType} · ${item.relativePath}`;
 
   const actions = document.createElement("div");
@@ -2287,34 +2381,50 @@ function createApprovalBlock(item) {
   const body = document.createElement("div");
   body.className = "message-body";
 
-  const isShellExec = item.kind === "command" && item.executionMode === "shell";
+  const isCommandLike = isCommandApproval(item);
+  const isShellExec = isCommandLike && item.executionMode === "shell";
 
   const lead = document.createElement("p");
   lead.className = "approval-copy";
-  lead.textContent = item.kind === "command"
-    ? isShellExec
-      ? `The model wants to run a shell-interpreted command in ${item.cwd || "the workspace"}.`
-      : `The model wants to run a command in ${item.cwd || "the workspace"}.`
+  lead.textContent = isCommandLike
+    ? item.kind === "terminal-task"
+      ? `The agent wants to start a long-running terminal task in ${item.cwd || "the workspace"}.`
+      : isShellExec
+        ? `The agent wants to run a shell-interpreted command in ${item.cwd || "the workspace"}.`
+        : `The agent wants to run a command in ${item.cwd || "the workspace"}.`
     : item.status === "pending"
       ? `The model proposed a ${item.changeType} for ${item.relativePath}. Review the diff below before continuing.`
       : `The proposed ${item.changeType} for ${item.relativePath} was ${item.status}.`;
 
-  if (item.kind === "command") {
+  if (isCommandLike) {
     const cmdShell = document.createElement("div");
     cmdShell.className = "approval-diff-shell";
 
     const cmdTitle = document.createElement("div");
     cmdTitle.className = "approval-diff-title";
-    cmdTitle.textContent = isShellExec ? "Shell Command" : "Command";
+    cmdTitle.textContent = item.kind === "terminal-task"
+      ? "Terminal Task"
+      : isShellExec ? "Shell Command" : "Command";
 
-    // Shell execution warning
     if (isShellExec) {
       const shellWarning = document.createElement("div");
       shellWarning.className = "approval-diff-title";
       shellWarning.style.color = "var(--warning)";
-      shellWarning.textContent = "⚠ This command contains shell syntax and will be interpreted by /bin/sh";
+      shellWarning.textContent = "Warning: this command contains shell syntax and will be interpreted by /bin/sh.";
       cmdShell.appendChild(shellWarning);
     }
+
+    [
+      ["Why", item.reason],
+      ["Expected", item.expectedOutcome],
+      ["Risk", item.riskSummary]
+    ].forEach(([label, value]) => {
+      if (!value) return;
+      const detail = document.createElement("div");
+      detail.className = "approval-explain";
+      detail.innerHTML = `<strong>${label}:</strong> ${escapeHtml(value)}`;
+      cmdShell.appendChild(detail);
+    });
 
     const cmdPre = document.createElement("pre");
     cmdPre.className = "approval-diff approval-command";
@@ -2352,6 +2462,97 @@ function createApprovalBlock(item) {
   return block;
 }
 
+function createTerminalTaskBlock(item) {
+  const block = document.createElement("article");
+  block.className = "message-block";
+
+  const surface = document.createElement("div");
+  surface.className = `message-surface terminal-task-surface terminal-task-${item.status || "unknown"}`;
+
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+
+  const metaLeft = document.createElement("div");
+  metaLeft.className = "message-meta-left";
+
+  const role = document.createElement("span");
+  role.className = "message-role";
+  role.textContent = "Terminal Task";
+
+  const model = document.createElement("span");
+  model.className = "message-model";
+  model.textContent = item.status || "unknown";
+
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+
+  const refreshBtn = document.createElement("button");
+  refreshBtn.className = "message-action";
+  refreshBtn.type = "button";
+  refreshBtn.textContent = item.isRefreshing ? "Refreshing..." : "Refresh";
+  refreshBtn.disabled = Boolean(item.isRefreshing);
+  refreshBtn.addEventListener("click", () => {
+    void refreshTerminalTaskItem(item.id);
+  });
+  actions.appendChild(refreshBtn);
+
+  if (isTerminalTaskActive(item.status)) {
+    const stopTaskBtn = document.createElement("button");
+    stopTaskBtn.className = "message-action approval-reject";
+    stopTaskBtn.type = "button";
+    stopTaskBtn.textContent = "Stop";
+    stopTaskBtn.disabled = Boolean(item.isRefreshing);
+    stopTaskBtn.addEventListener("click", () => {
+      void refreshTerminalTaskItem(item.id, { stop: true });
+    });
+    actions.appendChild(stopTaskBtn);
+  }
+
+  metaLeft.append(role, model);
+  meta.append(metaLeft, actions);
+
+  const body = document.createElement("div");
+  body.className = "message-body";
+
+  const commandShell = document.createElement("div");
+  commandShell.className = "terminal-task-shell";
+
+  const commandTitle = document.createElement("div");
+  commandTitle.className = "approval-diff-title";
+  commandTitle.textContent = "Command";
+
+  const commandPre = document.createElement("pre");
+  commandPre.className = "approval-diff approval-command";
+  commandPre.textContent = item.command || "";
+
+  const cwdLabel = document.createElement("div");
+  cwdLabel.className = "approval-diff-title";
+  cwdLabel.textContent = `cwd: ${item.cwd || "."}`;
+
+  commandShell.append(commandTitle, commandPre, cwdLabel);
+
+  const outputTitle = document.createElement("div");
+  outputTitle.className = "approval-diff-title";
+  outputTitle.textContent = item.outputTruncated ? "Recent Output (truncated)" : "Recent Output";
+
+  const outputPre = document.createElement("pre");
+  outputPre.className = "terminal-task-output";
+  outputPre.textContent = item.output || "No output yet. Use Refresh after the command has had a moment to print.";
+
+  body.append(commandShell, outputTitle, outputPre);
+
+  if (item.error) {
+    const error = document.createElement("p");
+    error.className = "terminal-task-error";
+    error.textContent = item.error;
+    body.appendChild(error);
+  }
+
+  surface.append(meta, body);
+  block.appendChild(surface);
+  return block;
+}
+
 function renderConversation() {
   messagesList.innerHTML = "";
   state.lastGeneratedCodeBlocks = [];
@@ -2374,6 +2575,11 @@ function renderConversation() {
 
     if (item.type === "approval") {
       messagesList.appendChild(createApprovalBlock(item));
+      return;
+    }
+
+    if (item.type === "terminal-task") {
+      messagesList.appendChild(createTerminalTaskBlock(item));
     }
   });
 
@@ -2423,14 +2629,16 @@ function buildSystemMessages({ agentMode = false, workspaceContext = "", pseudoT
     messages.push({
       role: "system",
       content: [
-        `You are operating as a workspace-scoped coding agent inside the workspace root: ${state.currentFolderPath}.`,
+        `You are operating as a workspace-scoped agent for a non-coder inside the workspace root: ${state.currentFolderPath}.`,
         "All tool paths must be relative to this workspace root.",
-        "Use tools to inspect the project before proposing edits when relevant.",
-        "Prefer propose_file_edit for modifying existing files — it does a targeted find-and-replace.",
-        "Use propose_file_write only for creating new files or complete rewrites.",
-        "Use run_command to verify changes, run tests, check output, or inspect git state.",
-        "Safe read-only commands run automatically; commands that modify state require user approval.",
-        "Never propose more than one file change or unsafe command at a time.",
+        "Your main job is to explain what is happening, inspect safely, run simple terminal checks, and help the user understand next steps.",
+        "Do not present yourself as an autonomous coding agent. Keep file editing secondary unless the user asks for a small, specific change.",
+        "Use list_workspace, read_file, search_workspace, and read-only run_command calls before suggesting changes.",
+        "When calling run_command or start_terminal_task, include reason, expectedOutcome, and riskSummary in plain language for a beginner.",
+        "Use start_terminal_task for long-running commands such as npm run dev or local servers; use get_terminal_task_output to inspect recent output and stop_terminal_task when asked to stop it.",
+        "Safe read-only commands can run automatically, but install commands, package scripts, shell-interpreted commands, file writes, edits, and long-running terminal tasks require user approval.",
+        "Never claim a command, server, test, or app started successfully until tool output confirms it.",
+        "Never propose more than one file change, unsafe command, or terminal task at a time.",
         "File writes and edits require explicit user approval before they are applied.",
         "If the backend does not support native tool_calls in responses, emit exactly one JSON object with keys name and arguments, and no surrounding prose."
       ].join(" ")
@@ -2467,14 +2675,14 @@ async function buildWorkspaceContextMessage() {
   if (window.electronAPI?.getWorkspaceTree) {
     const tree = await window.electronAPI.getWorkspaceTree(state.currentFolderPath);
     if (tree) {
-      return `You are currently working in the local directory: ${state.currentFolderPath}.\n\nWorkspace file tree:\n\`\`\`\n${tree}\n\`\`\`\n\nUse the tools to inspect files before making changes. Contextualize your responses to this workspace.`;
+      return `You are currently working in the local directory: ${state.currentFolderPath}.\n\nWorkspace file tree:\n\`\`\`\n${tree}\n\`\`\`\n\nHelp the user with safe terminal and workspace steps for this project. Inspect before suggesting changes.`;
     }
   }
 
   if (window.electronAPI?.getFolderContents) {
     const filesContext = await window.electronAPI.getFolderContents(state.currentFolderPath);
     if (filesContext) {
-      return `You are currently working in the local directory: ${state.currentFolderPath}. The files inside this directory are: ${filesContext}. Please contextualize your responses to this workspace when relevant.`;
+      return `You are currently working in the local directory: ${state.currentFolderPath}. The files inside this directory are: ${filesContext}. Help the user with safe terminal and workspace steps for this project.`;
     }
   }
 
@@ -2744,8 +2952,9 @@ function toggleWorkspaceSidebar(force) {
   workspaceSidebar.classList.toggle("hidden", !shouldOpen);
   if (shouldOpen) {
     renderWorkspaceSidebar();
-    toggleSessionsSidebar(false);
+    sessionsSidebar?.classList.add("hidden");
   }
+  updatePanelLayoutState();
 }
 
 function toggleSessionsSidebar(force) {
@@ -2754,8 +2963,16 @@ function toggleSessionsSidebar(force) {
   sessionsSidebar.classList.toggle("hidden", !shouldOpen);
   if (shouldOpen) {
     renderSessionsSidebar();
-    toggleWorkspaceSidebar(false);
+    workspaceSidebar?.classList.add("hidden");
   }
+  updatePanelLayoutState();
+}
+
+function updatePanelLayoutState() {
+  const workspaceOpen = Boolean(workspaceSidebar && !workspaceSidebar.classList.contains("hidden"));
+  const sessionsOpen = Boolean(sessionsSidebar && !sessionsSidebar.classList.contains("hidden"));
+  appLayout.classList.toggle("workspace-panel-open", workspaceOpen);
+  appLayout.classList.toggle("sessions-panel-open", !workspaceOpen && sessionsOpen);
 }
 
 function clearConversation({ silent = false } = {}) {
@@ -2781,19 +2998,19 @@ function paletteRootItems() {
     {
       label: "Switch model",
       detail: state.currentModel,
-      meta: "models",
+      meta: "Cmd+K",
       action: "open-models"
     },
     {
       label: "Select workspace",
       detail: basename(state.currentFolderPath),
-      meta: "workspace",
+      meta: "Cmd+B",
       action: "open-workspaces"
     },
     {
       label: "Recent sessions",
       detail: `${getRenderableSessions().length} saved`,
-      meta: "sessions",
+      meta: "Cmd+J",
       action: "open-sessions"
     },
     {
@@ -2805,7 +3022,7 @@ function paletteRootItems() {
     {
       label: "Advanced settings",
       detail: buildPaletteRootDetail(),
-      meta: "settings",
+      meta: "Cmd+,",
       action: "open-settings"
     },
     {
@@ -3090,7 +3307,7 @@ async function loadSession(sessionId) {
     updateTranscriptItem(expiredChange.id, { status: "expired" });
     const isCommand = expiredChange.kind === "command";
     addTranscriptItem("approval-result", {
-      title: "Tool Result",
+      title: "Agent Step",
       subtitle: expiredChange.toolName || "propose_file_write",
       status: "result",
       variant: "error",
@@ -3261,10 +3478,10 @@ function createToolTranscriptSummary(toolName, args, result) {
     const cmdSnippet = (args?.command || result?.command || "").slice(0, 60);
     if (result.error) {
       return cmdSnippet
-        ? `Command \`${cmdSnippet}\` failed: ${result.error}`
+        ? `The helper tried \`${cmdSnippet}\`, but it failed: ${result.error}`
         : result.error;
     }
-    return cmdSnippet ? `Command \`${cmdSnippet}\` failed.` : "`run_command` failed.";
+    return cmdSnippet ? `The agent tried \`${cmdSnippet}\`, but it failed.` : "`run_command` failed.";
   }
 
   if (result?.success === false) {
@@ -3272,11 +3489,11 @@ function createToolTranscriptSummary(toolName, args, result) {
   }
 
   if (toolName === "list_workspace") {
-    return `Listed \`${result.relativePath || "."}\` in the current workspace.`;
+    return `Looked at the files in \`${result.relativePath || "."}\`.`;
   }
 
   if (toolName === "read_file") {
-    return `Read \`${result.relativePath}\` lines ${result.startLine}-${result.endLine}.`;
+    return `Read \`${result.relativePath}\` lines ${result.startLine}-${result.endLine} to understand it before advising.`;
   }
 
   if (toolName === "search_workspace") {
@@ -3304,12 +3521,34 @@ function createToolTranscriptSummary(toolName, args, result) {
   if (toolName === "run_command") {
     const cmdSnippet = (args?.command || result?.command || "").slice(0, 60);
     if (result.decision === "approved") {
-      return `Ran approved command: \`${cmdSnippet}\`. Exit code ${result.exitCode ?? 0}.`;
+      return `Ran the approved command \`${cmdSnippet}\`. Exit code ${result.exitCode ?? 0}.`;
     }
     if (result.decision === "rejected") {
       return `User rejected command: \`${cmdSnippet}\`.`;
     }
-    return `Ran \`${cmdSnippet}\`. Exit code ${result.exitCode ?? 0}.`;
+    return `Ran the read-only check \`${cmdSnippet}\`. Exit code ${result.exitCode ?? 0}.`;
+  }
+
+  if (toolName === "start_terminal_task") {
+    const cmdSnippet = (args?.command || result?.command || "").slice(0, 60);
+    if (result.decision === "rejected") {
+      return `User rejected terminal task: \`${cmdSnippet}\`.`;
+    }
+    if (result.status === "failed") {
+      return `Could not start terminal task \`${cmdSnippet}\`: ${result.error || "unknown error"}`;
+    }
+    if (result.taskId) {
+      return `Started terminal task \`${cmdSnippet}\`. Watch the task card for output or stop it.`;
+    }
+    return `Prepared terminal task \`${cmdSnippet}\`.`;
+  }
+
+  if (toolName === "get_terminal_task_output") {
+    return `Checked the terminal task output. Status: ${result.status || "unknown"}.`;
+  }
+
+  if (toolName === "stop_terminal_task") {
+    return `Asked the terminal task to stop. Status: ${result.status || "unknown"}.`;
   }
 
   return `Completed \`${toolName}\`${pathHint}.`;
@@ -3348,7 +3587,7 @@ async function executeToolCalls(toolCalls) {
 
     proposalCalls.forEach((toolCall) => {
       addTranscriptItem("tool", {
-        title: "Tool Result",
+        title: "Agent Step",
         subtitle: toolCall.function?.name || "propose_file_write",
         status: "result",
         variant: "error",
@@ -3368,7 +3607,7 @@ async function executeToolCalls(toolCalls) {
         error: "Skipped because multiple file write proposals are not allowed in a single step."
       };
       addTranscriptItem("tool", {
-        title: "Tool Result",
+        title: "Agent Step",
         subtitle: skippedName,
         status: "result",
         variant: "error",
@@ -3386,10 +3625,10 @@ async function executeToolCalls(toolCalls) {
   for (const toolCall of toolCalls) {
     const toolName = toolCall.function?.name || "unknown_tool";
     const transcriptItem = addTranscriptItem("tool", {
-      title: "Tool Running",
+      title: "Agent Working",
       subtitle: toolName,
       status: "running",
-      summary: `Running \`${toolName}\`...`
+      summary: `Agent is using \`${toolName}\`...`
     });
     renderConversation();
 
@@ -3401,7 +3640,7 @@ async function executeToolCalls(toolCalls) {
         error: "Tool arguments were not valid JSON."
       };
       updateTranscriptItem(transcriptItem.id, {
-        title: "Tool Result",
+        title: "Agent Step",
         status: "result",
         variant: "error",
         summary: errorResult.error,
@@ -3418,7 +3657,7 @@ async function executeToolCalls(toolCalls) {
         error: "No workspace is selected. Ask the user to pick a workspace first."
       };
       updateTranscriptItem(transcriptItem.id, {
-        title: "Tool Result",
+        title: "Agent Step",
         status: "result",
         variant: "error",
         summary: errorResult.error,
@@ -3435,7 +3674,7 @@ async function executeToolCalls(toolCalls) {
         error: "A pending change or command must be approved or rejected before more tools can continue."
       };
       updateTranscriptItem(transcriptItem.id, {
-        title: "Tool Result",
+        title: "Agent Step",
         status: "result",
         variant: "error",
         summary: errorResult.error,
@@ -3457,16 +3696,24 @@ async function executeToolCalls(toolCalls) {
         ...result.pendingChange,
         transport: toolCall.transport || "native"
       };
-      const isCommand = result.pendingChange.kind === "command";
+      const isCommand = isCommandApproval(result.pendingChange);
       updateTranscriptItem(transcriptItem.id, {
-        title: "Tool Result",
+        title: "Agent Step",
         subtitle: toolName,
         status: "result",
         summary: isCommand
-          ? `Wants to run \`${result.pendingChange.command}\`. Waiting for approval.`
+          ? result.pendingChange.kind === "terminal-task"
+            ? `Wants to start \`${result.pendingChange.command}\`. Waiting for approval.`
+            : `Wants to run \`${result.pendingChange.command}\`. Waiting for approval.`
           : `Prepared a ${result.pendingChange.changeType} for \`${result.pendingChange.relativePath}\`. Waiting for approval.`,
         details: isCommand
-          ? prettyJson({ command: result.pendingChange.command, cwd: result.pendingChange.cwd })
+          ? prettyJson({
+              command: result.pendingChange.command,
+              cwd: result.pendingChange.cwd,
+              reason: result.pendingChange.reason,
+              expectedOutcome: result.pendingChange.expectedOutcome,
+              riskSummary: result.pendingChange.riskSummary
+            })
           : prettyJson({ relativePath: result.pendingChange.relativePath, changeType: result.pendingChange.changeType })
       });
 
@@ -3478,11 +3725,11 @@ async function executeToolCalls(toolCalls) {
           success: false,
           toolName: skippedName,
           error: isCommand
-            ? "Skipped because a command approval requires action first."
+            ? "Skipped because a command or terminal task approval requires action first."
             : "Skipped because a file change proposal requires approval first."
         };
         addTranscriptItem("tool", {
-          title: "Tool Result",
+          title: "Agent Step",
           subtitle: skippedName,
           status: "result",
           variant: "error",
@@ -3505,7 +3752,7 @@ async function executeToolCalls(toolCalls) {
     };
 
     updateTranscriptItem(transcriptItem.id, {
-      title: "Tool Result",
+      title: "Agent Step",
       subtitle: toolName,
       status: "result",
       variant: toolResult.success === false ? "error" : "neutral",
@@ -3645,12 +3892,82 @@ async function runAgentLoop(providerConfig) {
 
   // Iteration limit reached — agent loop stopped
   addTranscriptItem("error", {
-    content: `Agent loop stopped after ${AGENT_LOOP_MAX_ITERATIONS} tool steps. This limit prevents runaway behavior. You can send another message to continue the task.`,
+    content: `Agent stopped after ${AGENT_LOOP_MAX_ITERATIONS} tool steps. This limit prevents runaway behavior. Send another message to continue the task.`,
     model: state.currentModel,
     variant: "error"
   });
   renderConversation();
   await saveCurrentSession();
+}
+
+function terminalTaskTranscriptPayload(toolResult) {
+  return {
+    taskId: toolResult.taskId,
+    command: toolResult.command,
+    cwd: toolResult.cwd,
+    executionMode: toolResult.executionMode,
+    status: toolResult.status,
+    output: toolResult.output || "",
+    outputTruncated: Boolean(toolResult.outputTruncated),
+    exitCode: toolResult.exitCode,
+    signal: toolResult.signal,
+    error: toolResult.error || "",
+    reason: toolResult.reason || "",
+    expectedOutcome: toolResult.expectedOutcome || "",
+    riskSummary: toolResult.riskSummary || ""
+  };
+}
+
+async function refreshTerminalTaskItem(itemId, { stop = false } = {}) {
+  const item = state.transcriptItems.find((entry) => entry.id === itemId);
+  if (!item || item.type !== "terminal-task" || !item.taskId) return;
+
+  if (!state.currentFolderPath) {
+    showToast("Select the original workspace before refreshing this task");
+    return;
+  }
+
+  updateTranscriptItem(itemId, { isRefreshing: true });
+  renderConversation();
+
+  try {
+    const toolName = stop ? "stop_terminal_task" : "get_terminal_task_output";
+    const response = await window.electronAPI?.invokeAgentTool?.({
+      toolName,
+      args: { taskId: item.taskId },
+      workspaceRoot: state.currentFolderPath
+    });
+    const toolResult = response?.toolResult;
+
+    if (!toolResult || toolResult.success === false) {
+      updateTranscriptItem(itemId, {
+        isRefreshing: false,
+        error: toolResult?.error || "Unable to read terminal task output."
+      });
+      showToast(toolResult?.error || "Unable to read terminal task output");
+    } else {
+      updateTranscriptItem(itemId, {
+        ...terminalTaskTranscriptPayload(toolResult),
+        isRefreshing: false
+      });
+    }
+  } catch (error) {
+    updateTranscriptItem(itemId, {
+      isRefreshing: false,
+      error: error?.message || "Unable to read terminal task output."
+    });
+    showToast(error?.message || "Unable to read terminal task output");
+  }
+
+  renderConversation();
+  await saveCurrentSession();
+
+  const refreshed = state.transcriptItems.find((entry) => entry.id === itemId);
+  if (stop && refreshed && refreshed.status === "stopping") {
+    window.setTimeout(() => {
+      void refreshTerminalTaskItem(itemId);
+    }, 1000);
+  }
 }
 
 async function resolvePendingChange(decision) {
@@ -3684,7 +4001,7 @@ async function resolvePendingChange(decision) {
         status: "pending"
       });
       addTranscriptItem("approval-result", {
-        title: "Tool Result",
+        title: "Agent Step",
         subtitle: pendingChange.toolName || "propose_file_write",
         status: "result",
         variant: "error",
@@ -3704,13 +4021,23 @@ async function resolvePendingChange(decision) {
       status: decision === "approve" ? "approved" : "rejected"
     });
     addTranscriptItem("approval-result", {
-      title: "Tool Result",
+      title: "Agent Step",
       subtitle: pendingChange.toolName || "propose_file_write",
       status: "result",
       variant: toolResult.success === false ? "error" : "neutral",
       summary: createToolTranscriptSummary(pendingChange.toolName || "propose_file_write", pendingChange, toolResult),
       details: prettyJson(toolResult)
     });
+
+    if (decision === "approve" && toolResult.toolName === "start_terminal_task" && toolResult.taskId) {
+      const taskItem = addTranscriptItem("terminal-task", terminalTaskTranscriptPayload(toolResult));
+      window.setTimeout(() => {
+        void refreshTerminalTaskItem(taskItem.id);
+      }, 900);
+      window.setTimeout(() => {
+        void refreshTerminalTaskItem(taskItem.id);
+      }, 2500);
+    }
 
     pushToolResultToApiHistory({
       id: pendingChange.toolCallId,
@@ -3850,7 +4177,7 @@ async function sendPlainChat(providerConfig, text, attachments = []) {
 async function sendAgentMessage(providerConfig, text, attachments = []) {
   if (!providerSupportsAgentTools(providerConfig)) {
     addTranscriptItem("error", {
-      content: "Agent tools are unavailable for the selected provider. Use native Ollama or a compatible /v1 backend.",
+      content: "Agent is unavailable for the selected provider. Use native Ollama or a compatible /v1 backend.",
       model: state.currentModel,
       variant: "error"
     });
@@ -3861,7 +4188,7 @@ async function sendAgentMessage(providerConfig, text, attachments = []) {
 
   if (!state.currentFolderPath) {
     addTranscriptItem("error", {
-      content: "Select a workspace before using agent tools. The workspace agent is intentionally scoped to the current folder.",
+      content: "Select a workspace before using Agent. It is intentionally scoped to the current folder.",
       model: state.currentModel,
       variant: "error"
     });
@@ -3938,6 +4265,14 @@ async function sendMessage(text) {
     scrollToBottom();
   }
 }
+
+launchWorkspaceBtn?.addEventListener("click", () => {
+  void chooseWorkspace();
+});
+
+launchPaletteBtn?.addEventListener("click", () => {
+  void openCmdPalette("root");
+});
 
 workspacePill.addEventListener("click", () => {
   toggleWorkspaceSidebar();
@@ -4131,20 +4466,20 @@ document.addEventListener("keydown", (event) => {
       closeCmdPalette();
       return;
     }
-    if (workspaceSidebar && !workspaceSidebar.classList.contains("hidden")) {
-      toggleWorkspaceSidebar(false);
-      return;
-    }
-    if (sessionsSidebar && !sessionsSidebar.classList.contains("hidden")) {
-      toggleSessionsSidebar(false);
-      return;
-    }
     if (!settingsModalOverlay.classList.contains("hidden")) {
       closeSettingsModal();
       return;
     }
     if (!systemModalOverlay.classList.contains("hidden")) {
       closeSystemModal();
+      return;
+    }
+    if (workspaceSidebar && !workspaceSidebar.classList.contains("hidden")) {
+      toggleWorkspaceSidebar(false);
+      return;
+    }
+    if (sessionsSidebar && !sessionsSidebar.classList.contains("hidden")) {
+      toggleSessionsSidebar(false);
       return;
     }
     if (state.isGenerating && state.currentAbortController) {

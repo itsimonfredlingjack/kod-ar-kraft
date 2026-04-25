@@ -5,9 +5,11 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
+const { createTerminalOutputBuffer, normalizeCommandMetadata } = require('./terminal-helper');
 
 const execFileAsync = promisify(execFile);
 const pendingAgentChanges = new Map();
+const terminalTasks = new Map();
 
 function sanitizeShareFilename(input) {
   const trimmed = typeof input === 'string' ? input.trim() : '';
@@ -370,7 +372,7 @@ function ensurePathInsideRoot(rootPath, targetPath) {
 
 async function resolveWorkspaceRoot(workspaceRoot) {
   if (!workspaceRoot) {
-    createToolError('A workspace must be selected before using agent tools.', 'MISSING_WORKSPACE');
+    createToolError('A workspace must be selected before using Terminal Helper.', 'MISSING_WORKSPACE');
   }
 
   const rootRealPath = await fsp.realpath(workspaceRoot).catch(() => {
@@ -968,6 +970,173 @@ async function executeCommand({ file, args = [], cwd }) {
   });
 }
 
+function serializeTerminalTask(task, { success = true } = {}) {
+  const snapshot = task.outputBuffer.snapshot();
+  return {
+    success,
+    toolName: 'terminal_task',
+    taskId: task.id,
+    command: task.command,
+    cwd: task.cwd,
+    executionMode: task.executionMode,
+    status: task.status,
+    startedAt: task.startedAt,
+    endedAt: task.endedAt || null,
+    exitCode: task.exitCode ?? null,
+    signal: task.signal || null,
+    error: task.error || '',
+    output: snapshot.output,
+    outputTruncated: snapshot.truncated,
+    reason: task.reason || '',
+    expectedOutcome: task.expectedOutcome || '',
+    riskSummary: task.riskSummary || ''
+  };
+}
+
+function startManagedTerminalTask(pendingChange) {
+  const execution = getCommandExecutionSpec(pendingChange.command);
+  const task = {
+    id: crypto.randomUUID(),
+    workspaceRoot: pendingChange.workspaceRoot,
+    command: pendingChange.command,
+    cwd: pendingChange.cwd,
+    executionMode: execution.executionMode,
+    status: 'starting',
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    exitCode: null,
+    signal: null,
+    error: '',
+    reason: pendingChange.reason || '',
+    expectedOutcome: pendingChange.expectedOutcome || '',
+    riskSummary: pendingChange.riskSummary || '',
+    outputBuffer: createTerminalOutputBuffer(32 * 1024),
+    child: null
+  };
+
+  terminalTasks.set(task.id, task);
+
+  try {
+    const child = spawn(execution.file, execution.args, {
+      cwd: pendingChange.cwd,
+      env: { ...process.env, PATH: process.env.PATH },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    task.child = child;
+    task.status = 'running';
+
+    child.stdout?.on('data', (chunk) => task.outputBuffer.append(chunk));
+    child.stderr?.on('data', (chunk) => task.outputBuffer.append(chunk));
+
+    child.on('error', (error) => {
+      task.status = 'failed';
+      task.error = error.message || 'Terminal task failed to start.';
+      task.endedAt = new Date().toISOString();
+    });
+
+    child.on('close', (code, signal) => {
+      task.exitCode = code ?? null;
+      task.signal = signal || null;
+      task.endedAt = new Date().toISOString();
+      task.status = task.status === 'stopping'
+        ? 'stopped'
+        : code === 0
+          ? 'finished'
+          : 'failed';
+      if (task.status === 'failed' && !task.error) {
+        task.error = `Terminal task exited with code ${code ?? 1}.`;
+      }
+    });
+  } catch (error) {
+    task.status = 'failed';
+    task.error = error.message || 'Terminal task failed to start.';
+    task.endedAt = new Date().toISOString();
+  }
+
+  return serializeTerminalTask(task, { success: task.status !== 'failed' });
+}
+
+async function startTerminalTaskTool(args, workspaceRoot) {
+  const command = typeof args.command === 'string' ? args.command.trim() : '';
+  if (!command) {
+    createToolError('start_terminal_task requires a command.', 'INVALID_TOOL_ARGS');
+  }
+
+  if (command.length > 300) {
+    createToolError(
+      'Terminal task command is too long for approval (max 300 characters). Break it into smaller steps.',
+      'COMMAND_TOO_COMPLEX'
+    );
+  }
+
+  const cwdRelative = typeof args.cwd === 'string' && args.cwd.trim() ? args.cwd.trim() : '.';
+  const { rootRealPath, targetPath: cwdPath } = await resolveWorkspaceTarget(workspaceRoot, cwdRelative);
+  const cwdStats = await fsp.stat(cwdPath);
+  if (!cwdStats.isDirectory()) {
+    createToolError(`${cwdRelative} is not a directory.`, 'WORKSPACE_NOT_DIRECTORY');
+  }
+
+  const metadata = normalizeCommandMetadata(args);
+  const execution = getCommandExecutionSpec(command);
+  const pendingChange = {
+    id: crypto.randomUUID(),
+    toolCallId: typeof args.toolCallId === 'string' ? args.toolCallId : '',
+    kind: 'terminal-task',
+    toolName: 'start_terminal_task',
+    workspaceRoot: rootRealPath,
+    command,
+    cwd: cwdPath,
+    executionMode: execution.executionMode,
+    status: 'pending',
+    ...metadata
+  };
+
+  pendingAgentChanges.set(pendingChange.id, pendingChange);
+  return { pendingChange };
+}
+
+async function resolveTerminalTask(args, workspaceRoot) {
+  const taskId = typeof args.taskId === 'string' ? args.taskId.trim() : '';
+  if (!taskId) {
+    createToolError('A terminal task id is required.', 'INVALID_TOOL_ARGS');
+  }
+
+  const rootRealPath = await resolveWorkspaceRoot(workspaceRoot);
+  const task = terminalTasks.get(taskId);
+  if (!task || task.workspaceRoot !== rootRealPath) {
+    createToolError('Terminal task not found in the selected workspace.', 'TERMINAL_TASK_NOT_FOUND');
+  }
+
+  return task;
+}
+
+async function getTerminalTaskOutputTool(args, workspaceRoot) {
+  const task = await resolveTerminalTask(args, workspaceRoot);
+  return {
+    ...serializeTerminalTask(task),
+    toolName: 'get_terminal_task_output'
+  };
+}
+
+async function stopTerminalTaskTool(args, workspaceRoot) {
+  const task = await resolveTerminalTask(args, workspaceRoot);
+  if (task.child && task.status === 'running') {
+    task.status = 'stopping';
+    task.child.kill('SIGTERM');
+    setTimeout(() => {
+      if (task.child && task.status === 'stopping') {
+        task.child.kill('SIGKILL');
+      }
+    }, 2000).unref();
+  }
+
+  return {
+    ...serializeTerminalTask(task),
+    toolName: 'stop_terminal_task'
+  };
+}
+
 async function runCommandTool(args, workspaceRoot) {
   const command = typeof args.command === 'string' ? args.command.trim() : '';
   if (!command) {
@@ -981,6 +1150,8 @@ async function runCommandTool(args, workspaceRoot) {
   if (!cwdStats.isDirectory()) {
     createToolError(`${cwdRelative} is not a directory.`, 'WORKSPACE_NOT_DIRECTORY');
   }
+
+  const metadata = normalizeCommandMetadata(args);
 
   if (isCommandSafe(command, rootRealPath)) {
     // Safe commands: execute directly without shell interpretation.
@@ -997,7 +1168,8 @@ async function runCommandTool(args, workspaceRoot) {
       ...result,
       toolName: 'run_command',
       command,
-      executionMode: execution.executionMode
+      executionMode: execution.executionMode,
+      ...metadata
     };
   }
 
@@ -1021,7 +1193,8 @@ async function runCommandTool(args, workspaceRoot) {
     command,
     cwd: cwdPath,
     executionMode: approvalExecution.executionMode,
-    status: 'pending'
+    status: 'pending',
+    ...metadata
   };
 
   pendingAgentChanges.set(pendingChange.id, pendingChange);
@@ -1111,6 +1284,18 @@ async function invokeAgentTool(payload = {}) {
       return { toolResult: result };
     }
 
+    if (toolName === 'start_terminal_task') {
+      return await startTerminalTaskTool(args, workspaceRoot);
+    }
+
+    if (toolName === 'get_terminal_task_output') {
+      return { toolResult: await getTerminalTaskOutputTool(args, workspaceRoot) };
+    }
+
+    if (toolName === 'stop_terminal_task') {
+      return { toolResult: await stopTerminalTaskTool(args, workspaceRoot) };
+    }
+
     if (toolName === 'propose_file_edit') {
       return await proposeFileEditTool(args, workspaceRoot);
     }
@@ -1171,9 +1356,28 @@ async function resolvePendingAgentChange(payload = {}) {
           decision: 'approved',
           executionMode: execution.executionMode,
           command: pendingChange.command,
+          reason: pendingChange.reason || '',
+          expectedOutcome: pendingChange.expectedOutcome || '',
+          riskSummary: pendingChange.riskSummary || '',
           message: result.success
             ? `Executed (${execution.executionMode}): ${pendingChange.command}`
             : result.error || `Command exited with code ${result.exitCode ?? 1} (${execution.executionMode}).`
+        }
+      };
+    }
+
+    if (pendingChange.kind === 'terminal-task') {
+      const taskResult = startManagedTerminalTask(pendingChange);
+      pendingAgentChanges.delete(changeId);
+
+      return {
+        toolResult: {
+          ...taskResult,
+          toolName: pendingChange.toolName || 'start_terminal_task',
+          decision: 'approved',
+          message: taskResult.success
+            ? `Started terminal task: ${pendingChange.command}`
+            : taskResult.error || `Failed to start terminal task: ${pendingChange.command}`
         }
       };
     }
@@ -1217,9 +1421,14 @@ async function resolvePendingAgentChange(payload = {}) {
   };
   pendingAgentChanges.delete(changeId);
 
-  if (pendingChange.kind === 'command') {
+  if (pendingChange.kind === 'command' || pendingChange.kind === 'terminal-task') {
     rejectResult.command = pendingChange.command;
-    rejectResult.message = `User rejected the command: ${pendingChange.command}`;
+    rejectResult.reason = pendingChange.reason || '';
+    rejectResult.expectedOutcome = pendingChange.expectedOutcome || '';
+    rejectResult.riskSummary = pendingChange.riskSummary || '';
+    rejectResult.message = pendingChange.kind === 'terminal-task'
+      ? `User rejected the terminal task: ${pendingChange.command}`
+      : `User rejected the command: ${pendingChange.command}`;
   } else {
     rejectResult.relativePath = pendingChange.relativePath;
     rejectResult.changeType = pendingChange.changeType;
@@ -1236,6 +1445,14 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  for (const task of terminalTasks.values()) {
+    if (task.child && (task.status === 'running' || task.status === 'starting')) {
+      task.child.kill('SIGTERM');
+    }
+  }
 });
 
 app.on('window-all-closed', () => {

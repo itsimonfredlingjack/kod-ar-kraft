@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Warp-Chat MVP</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=terminal-helper-v1">
   <link rel="stylesheet" href="vendor/tokyo-night-dark.min.css">
 </head>
 <body>
@@ -71,8 +71,8 @@
         </div>
         <div class="settings-field settings-toggle-field">
           <div class="settings-toggle-copy">
-            <label for="agent-tools-toggle">Agent Tools</label>
-            <p>Enable workspace-scoped tool calling with approval-gated edits and commands.</p>
+            <label for="agent-tools-toggle">Agent mode</label>
+            <p>Let the agent inspect the workspace, run tools, show its work, and ask before risky actions.</p>
           </div>
           <label class="settings-toggle" for="agent-tools-toggle">
             <input id="agent-tools-toggle" type="checkbox">
@@ -123,7 +123,7 @@
   <div class="titlebar-drag-region">
     <div class="hud-status">
       <span class="status-dot"></span>
-      <span id="status-text">Model standing by</span>
+      <span id="status-text">Agent standing by</span>
     </div>
   </div>
 
@@ -151,10 +151,18 @@
 
     <section id="launch-state" class="launch-state">
       <p class="launch-kicker">Warp-Chat</p>
-      <h1 class="launch-title">KOD ÄR KRAFT</h1>
+      <h1 class="launch-title">Start with a workspace</h1>
       <p id="launch-copy" class="launch-copy">
-        Ask a question, inspect a file, or iterate on code. Use Cmd+K for model, workspace, and session controls.
+        Choose a workspace to inspect files, run checks, or ask about code.
       </p>
+      <div class="launch-actions">
+        <button id="launch-workspace-btn" class="launch-action primary" type="button">
+          Choose workspace
+        </button>
+        <button id="launch-palette-btn" class="launch-action secondary" type="button">
+          Open command palette
+        </button>
+      </div>
     </section>
 
     <div id="messages" class="messages-list" aria-live="polite" aria-relevant="additions"></div>
@@ -162,11 +170,11 @@
     <div class="input-container">
       <div class="input-toolbar">
         <div class="toolbar-group">
-          <button id="workspace-pill" class="toolbar-pill" type="button" title="Open workspace controls">
+          <button id="workspace-pill" class="toolbar-pill" type="button" title="Open workspace controls (Cmd+B)">
             <span class="toolbar-pill-label">Workspace</span>
             <span id="active-folder-name" class="toolbar-pill-value">Global</span>
           </button>
-          <button id="model-pill" class="toolbar-pill" type="button" title="Open model controls">
+          <button id="model-pill" class="toolbar-pill" type="button" title="Open model controls (Cmd+K)">
             <span class="toolbar-pill-label">Model</span>
             <span id="active-model-name" class="toolbar-pill-value">qwen3.5:9b</span>
           </button>
@@ -187,7 +195,7 @@
         <span class="prompt-icon">›</span>
         <textarea
           id="prompt-input"
-          placeholder="Message the model, ask for code, or describe a task..."
+          placeholder="Tell the agent what to do..."
           rows="1"
           autofocus
         ></textarea>
@@ -205,6 +213,6 @@
   <script defer src="vendor/katex.min.js"></script>
   <script defer src="vendor/katex-auto-render.min.js"></script>
   <!-- Mermaid is NOT loaded in the host page. It runs only inside sandboxed iframes. -->
-  <script src="renderer.js"></script>
+  <script src="renderer.js?v=terminal-helper-v1"></script>
 </body>
 </html>

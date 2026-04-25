@@ -1,6 +1,6 @@
 # Warp-Chat
 
-A blazing fast, keyboard-first, floating macOS desktop client for local and remote LLMs. Built with Electron, Vanilla JS/CSS, and an absolute obsession with developer experience.
+A blazing fast, keyboard-first, floating macOS desktop client for local and remote LLMs. Built with Electron, Vanilla JS/CSS, and a focus on helping non-coders understand projects, terminal output, and safe next steps.
 
 ![Warp-Chat Interface](https://raw.githubusercontent.com/Poke1650/warp-chat/main/assets/screenshot.png) *(Imagine a beautiful glowing UI here)*
 
@@ -11,7 +11,7 @@ Designed to feel like a modern terminal (heavily inspired by Warp). No clutter, 
 - **Native macOS Vibrancy:** The window is frameless, frosted, and blurred, blending perfectly into your desktop environment.
 - **Dual Provider Support:** Switch between Ollama native mode (`/api/tags`, `/api/chat`) and OpenAI-compatible mode (`/v1/models`, `/v1/chat/completions`) from Advanced Settings.
 - **Streaming Chat Responses:** Handles Ollama NDJSON streams and OpenAI-style SSE streams without changing the chat UI.
-- **Workspace Agent Mode:** In OpenAI-compatible mode, enable `Agent Tools` to let the model inspect the selected workspace, search files, read files, and propose file writes with inline approval.
+- **Terminal Helper Mode:** Enable `Terminal Helper` to let the model inspect the selected workspace, explain terminal steps, run safe read-only checks, start approved long-running tasks, and propose file changes with inline approval.
 - **Markdown & Code Highlighting:** Live syntax highlighting with the *Tokyo Night Dark* theme via `highlight.js`, dynamically injected into the DOM stream.
 - **Keyboard-First Navigation:** 
   - `Enter` : Send prompt
@@ -65,26 +65,33 @@ Designed to feel like a modern terminal (heavily inspired by Warp). No clutter, 
    - `Base URL`: `http://127.0.0.1:11434` or `http://<tailscale-ip>:11434/v1`
    - `API Key`: optional, only if your server requires it
 
-## Tool Calling
+## Terminal Helper
 
-Phase 2 adds a first real agent mode:
+Terminal Helper is a guided workspace operator for people who do not want to reason through every terminal command alone:
 
-- `Agent Tools` lives in Advanced Settings and is off by default.
-- It only runs in `openai-compatible` mode.
-- The agent is scoped to the currently selected workspace.
+- `Terminal Helper` lives in Advanced Settings and is off by default.
+- It runs against native Ollama or OpenAI-compatible backends that support tool use or the app's pseudo-tool fallback.
+- It is scoped to the currently selected workspace.
 - Available tools are:
   - `list_workspace`
   - `read_file`
   - `search_workspace`
+  - `run_command`
+  - `start_terminal_task`
+  - `get_terminal_task_output`
+  - `stop_terminal_task`
+  - `propose_file_edit`
   - `propose_file_write`
-- File writes are never applied immediately. The app shows an inline diff preview with `Approve` and `Reject` buttons, and the agent loop only resumes after your decision.
+- Safe read-only commands can run automatically. Package scripts, shell-interpreted commands, installs, long-running terminal tasks, and file changes require approval.
+- Terminal tasks render as cards with recent output, refresh, and stop controls.
+- File writes are never applied immediately. The app shows an inline diff preview with `Approve` and `Reject` buttons, and the helper loop only resumes after your decision.
 
-Plain chat still streams exactly like before when agent tools are disabled.
+Plain chat still streams exactly like before when Terminal Helper is disabled.
 
 ## 🧠 What's Next?
-- Broader tool coverage beyond read/search/write proposals.
+- More beginner task templates for common project setup and debugging flows.
 - Smarter workspace context selection and file relevance ranking.
-- Optional shell or task execution with stronger safety controls.
+- Clearer terminal risk labels for package manager and build commands.
 
 ---
 *Created with ❤️ during an intense AI Agent collaboration session!*
